@@ -1,19 +1,20 @@
 """Aleph TUI — scrollback-mode terminal interface.
 
-Uses prompt_toolkit for everything: styled output via print_formatted_text(HTML(...)),
-streaming text via a layout Window, and persistent keybinding handling via Application.
+Uses prompt_toolkit's Application (full_screen=False) for persistent keybinding
+handling: Escape to interrupt, Ctrl+C to quit, Enter to submit.  Styled output
+goes to the terminal's normal scrollback buffer via print_formatted_text so
+native text selection and scrolling work naturally.
 
-Prints to the terminal's normal scrollback buffer (not alternate screen), so native
-text selection and scrolling work naturally. Multi-agent composition is handled by
-tmux, not the TUI — this is a single-agent interface.
+Responses are not streamed live — tokens accumulate silently and the full
+markdown-rendered response prints to scrollback when the turn completes (or
+when a tool call begins).  Multi-agent composition is handled by tmux, not
+the TUI — this is a single-agent interface.
 """
 
 from __future__ import annotations
 
 import asyncio
-import gc
 import json
-import time
 from markdown_it import MarkdownIt
 
 from prompt_toolkit import Application
@@ -21,7 +22,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML, FormattedText
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.processors import BeforeInput
@@ -33,6 +34,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     SystemMessage,
+    TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -72,7 +74,7 @@ def _tprint(html_str: str, *args, **kwargs) -> None:
 # ---- Markdown rendering ----
 #
 # Uses markdown-it-py to parse complete text into tokens, then converts
-# to prompt_toolkit FormattedText. Runs at commit time (not during streaming).
+# to prompt_toolkit FormattedText. Runs at commit time.
 
 _md = MarkdownIt("commonmark").enable("table")
 
@@ -376,21 +378,18 @@ class AlephApp:
 
     Uses a prompt_toolkit Application (full_screen=False) for persistent
     keybinding handling. Styled output goes to scrollback via print_formatted_text.
-    Streaming text renders in a layout Window and commits to scrollback when done.
+    Responses print in full at commit time (no live streaming).
     """
 
     def __init__(self, harness: AlephHarness) -> None:
         self._harness = harness
-        self._stream_chunks: list[str] = []    # raw chunks for final markdown render
-        self._stream_lines: list[str] = []     # incrementally maintained line list for live display
+        self._stream_chunks: list[str] = []
         self._thinking_buffer = ""
         self._tool_name_queue: list[str] = []
         self._total_input_tokens = 0
         self._total_output_tokens = 0
         self._receiving = False
         self._interrupt_in_flight = False
-        self._last_invalidate = 0.0  # monotonic timestamp of last render trigger
-        self._invalidate_pending = False
         self._app: Application | None = None
 
         # Build the prompt_toolkit Application
@@ -399,14 +398,6 @@ class AlephApp:
 
         layout = Layout(
             HSplit([
-                # Streaming display: visible only when tokens are arriving.
-                # Renders inside the layout so it doesn't conflict with
-                # run_in_terminal redraws from print_formatted_text.
-                Window(
-                    FormattedTextControl(self._get_stream_display),
-                    wrap_lines=True,
-                    dont_extend_height=True,
-                ),
                 Window(
                     BufferControl(
                         buffer=self._input_buffer,
@@ -424,17 +415,6 @@ class AlephApp:
             full_screen=False,
             style=TUI_STYLE,
         )
-
-    # Max lines to show in the live streaming window.  Only the tail is
-    # displayed to keep prompt_toolkit's line-wrap calculation cheap.
-    _STREAM_DISPLAY_TAIL = 50
-
-    def _get_stream_display(self) -> FormattedText:
-        """Return the tail of the streaming text for the layout Window."""
-        if self._stream_lines:
-            tail = self._stream_lines[-self._STREAM_DISPLAY_TAIL :]
-            return FormattedText([("", "\n".join(tail))])
-        return FormattedText([])
 
     def _build_keybindings(self) -> KeyBindings:
         """Create keybindings with state-based filters."""
@@ -539,55 +519,19 @@ class AlephApp:
             _tprint("\n<dim>Disconnecting...</dim>")
             await self._harness.stop()
 
-    # Minimum interval between render invalidations during streaming (seconds).
-    # 30fps is imperceptible for text; halves prompt_toolkit rendering overhead.
-    _INVALIDATE_INTERVAL = 0.033
-
-    def _throttled_invalidate(self) -> None:
-        """Request a render, throttled to _INVALIDATE_INTERVAL during streaming."""
-        now = time.monotonic()
-        elapsed = now - self._last_invalidate
-        if elapsed >= self._INVALIDATE_INTERVAL:
-            self._app.invalidate()
-            self._last_invalidate = now
-            self._invalidate_pending = False
-        elif not self._invalidate_pending:
-            self._invalidate_pending = True
-            delay = self._INVALIDATE_INTERVAL - elapsed
-            loop = asyncio.get_event_loop()
-            loop.call_later(delay, self._deferred_invalidate)
-
-    def _deferred_invalidate(self) -> None:
-        """Fire a deferred invalidate from the throttle timer."""
-        if self._invalidate_pending:
-            self._app.invalidate()
-            self._last_invalidate = time.monotonic()
-            self._invalidate_pending = False
-
     async def _send_and_receive(self, text: str) -> None:
         """Send a message and render the full response."""
         self._stream_chunks = []
-        self._stream_lines = []
         self._thinking_buffer = ""
         # _receiving is set True by the caller (handle_enter) synchronously
         # to prevent race conditions with double-Enter.
         self._receiving = True
-
-        # Suppress GC during streaming — prompt_toolkit's rendering creates
-        # heavy allocation churn that triggers gen-2 collections (80-200ms
-        # stop-the-world pauses). Safe because streaming is bounded and
-        # doesn't create reference cycles that would leak.
-        gc.disable()
 
         try:
             await self._harness.send(text)
 
             async for msg in self._harness.receive():
                 self._handle_sdk_message(msg)
-                # Yield to the event loop after streaming updates so the
-                # renderer can redraw the layout Window with new tokens.
-                if self._stream_chunks:
-                    await asyncio.sleep(0)
 
             self._commit_stream()
             self._commit_thinking()
@@ -595,8 +539,6 @@ class AlephApp:
         except Exception as e:
             _tprint("\n<err-b>Error:</err-b> {}", str(e))
         finally:
-            gc.enable()
-            gc.collect()
             self._receiving = False
             self._interrupt_in_flight = False
             if self._app:
@@ -625,7 +567,7 @@ class AlephApp:
                 if delta_type == "text_delta":
                     text = delta.get("text", "")
                     if text:
-                        self._on_stream_text(text)
+                        self._stream_chunks.append(text)
                 elif delta_type == "thinking_delta":
                     thinking = delta.get("thinking", "")
                     if thinking:
@@ -633,7 +575,12 @@ class AlephApp:
 
         elif isinstance(msg, AssistantMessage):
             for block in msg.content:
-                if isinstance(block, ToolUseBlock):
+                if isinstance(block, TextBlock) and block.text:
+                    # Fallback: capture text from the final message in case
+                    # StreamEvent deltas weren't sent (e.g. no partial messages).
+                    if not self._stream_chunks:
+                        self._stream_chunks.append(block.text)
+                elif isinstance(block, ToolUseBlock):
                     self._tool_name_queue.append(block.name)
                     self._on_tool_call_start(block.name, block.input)
 
@@ -655,26 +602,6 @@ class AlephApp:
                 _tprint("<dim-i>System: {}</dim-i>", msg.subtype)
 
     # ---- Rendering ----
-
-    def _on_stream_text(self, text: str) -> None:
-        """Handle a chunk of streamed text."""
-        if not self._stream_chunks:
-            self._commit_thinking()
-            _tprint("\n<assistant>Assistant:</assistant>")
-
-        self._stream_chunks.append(text)
-
-        # Incrementally update the line list: split the chunk on newlines,
-        # extend the current (last) line, and append any new lines.
-        parts = text.split("\n")
-        if self._stream_lines:
-            self._stream_lines[-1] += parts[0]
-        else:
-            self._stream_lines.append(parts[0])
-        for part in parts[1:]:
-            self._stream_lines.append(part)
-
-        self._throttled_invalidate()
 
     def _on_stream_thinking(self, text: str) -> None:
         """Handle a chunk of streamed thinking text."""
@@ -728,17 +655,12 @@ class AlephApp:
     # ---- Helpers ----
 
     def _commit_stream(self) -> None:
-        """Move streaming text from the layout Window to scrollback.
-
-        Renders the complete text with markdown formatting for the scrollback
-        version (bold, italic, code, headings, fenced code blocks).
-        """
+        """Render accumulated text as markdown and print to scrollback."""
         if self._stream_chunks:
             full_text = "".join(self._stream_chunks)
+            _tprint("\n<assistant>Assistant:</assistant>")
             print_formatted_text(_markdown_to_ft(full_text), style=TUI_STYLE)
             self._stream_chunks = []
-            self._stream_lines = []
-            self._app.invalidate()
 
     def _commit_thinking(self) -> None:
         """Flush the thinking buffer as dimmed text."""

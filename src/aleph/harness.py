@@ -27,8 +27,13 @@ MODEL_ALIASES = {
 # Model ID prefix → knowledge cutoff date. Prefixes are matched in order,
 # so more specific prefixes should come first.
 KNOWLEDGE_CUTOFFS = {
+    "claude-opus-4-6": "May 2025",
+    "claude-opus-4-5": "May 2025",
     "claude-opus-4": "May 2025",
+    "claude-sonnet-4-6": "May 2025",
+    "claude-sonnet-4-5": "May 2025",
     "claude-sonnet-4": "May 2025",
+    "claude-haiku-4-5": "May 2025",
     "claude-haiku-4": "May 2025",
     "claude-3-5": "Early 2024",
     "claude-3": "Early 2024",
@@ -209,6 +214,36 @@ class AlephHarness:
             raise RuntimeError("Harness not started. Call start() first.")
         async for msg in self._client.receive_response():
             yield msg
+
+    def check_model(self, actual_model: str) -> str | None:
+        """Check the actual model from an AssistantMessage against our assumption.
+
+        Called by the TUI on the first AssistantMessage. Returns a warning string
+        if there's a mismatch, None if everything matches.
+        """
+        if self._model_verified:
+            return None
+        self._model_verified = True
+
+        if actual_model == self._expected_model:
+            return None
+
+        # Model mismatch — our alias table is stale
+        warning = (
+            f"Model mismatch: expected '{self._expected_model}' "
+            f"but got '{actual_model}'. "
+            f"Update MODEL_ALIASES in harness.py."
+        )
+
+        # Check if the cutoff table covers this model
+        cutoff = _get_knowledge_cutoff(actual_model)
+        if cutoff == "unknown":
+            warning += (
+                f" Knowledge cutoff for '{actual_model}' is also unknown — "
+                f"update KNOWLEDGE_CUTOFFS too."
+            )
+
+        return warning
 
     async def interrupt(self):
         """Interrupt the agent's current turn."""
