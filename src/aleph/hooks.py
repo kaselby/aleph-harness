@@ -48,55 +48,43 @@ def create_inbox_check_hook(inbox_path: Path):
     return inbox_check_hook
 
 
-def create_skill_activation_hook(skills_path: Path):
-    """Create a PreToolUse hook (matcher="Read") that intercepts SKILL.md reads.
+def create_skill_context_hook(skills_path: Path):
+    """Create a PostToolUse hook (matcher="mcp__aleph__activate_skill") that injects
+    skill content as system-level context.
 
-    When the agent tries to Read a SKILL.md inside the skills directory, this hook
-    denies the Read and instead injects the skill content as additionalContext
-    (system-level authority). This prevents the content appearing twice — once as
-    a tool result and once as a system reminder.
+    When the activate_skill MCP tool runs, this hook replaces its output with a short
+    confirmation (via updatedMCPToolOutput) and injects the full skill content as
+    additionalContext so it appears as a system message rather than a tool result.
     """
 
-    async def skill_activation_hook(
+    async def skill_context_hook(
         input_data: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
         tool_input = input_data.get("tool_input", {})
-        file_path_str = tool_input.get("file_path", "")
-        if not file_path_str:
+        name = tool_input.get("name", "")
+        if not name:
             return {}
 
-        file_path = Path(file_path_str)
-
-        # Check if this is a SKILL.md inside the skills directory
-        if file_path.name != "SKILL.md":
-            return {}
-        try:
-            file_path.relative_to(skills_path)
-        except ValueError:
+        skill_md = skills_path / name / "SKILL.md"
+        if not skill_md.exists():
             return {}
 
-        if not file_path.exists():
-            return {}
+        content = skill_md.read_text()
 
-        # Read the skill content and inject it as system context
-        skill_name = file_path.parent.name
-        content = file_path.read_text()
-
-        # Strip YAML frontmatter — the model doesn't need the metadata
+        # Strip YAML frontmatter
         if content.startswith("---"):
             end = content.index("---", 3)
             content = content[end + 3:].strip()
 
         return {
             "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": f"Skill '{skill_name}' activated — content loaded as system context.",
-                "additionalContext": f"[Skill: {skill_name}]\n\n{content}",
+                "hookEventName": "PostToolUse",
+                "updatedMCPToolOutput": f"Skill '{name}' activated.",
+                "additionalContext": f"[Skill: {name}]\n\n{content}",
             }
         }
 
-    return skill_activation_hook
+    return skill_context_hook
 
 
 def create_read_tracking_hook(inbox_path: Path):

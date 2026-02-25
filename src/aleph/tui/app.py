@@ -1,29 +1,38 @@
 """Aleph TUI — scrollback-mode terminal interface.
 
-Uses Rich for formatted output and prompt_toolkit for input.
-Prints to the terminal's normal scrollback buffer (not alternate screen),
-so native text selection and scrolling work naturally.
+Uses prompt_toolkit for everything: styled output via print_formatted_text(HTML(...)),
+streaming text via a layout Window, and persistent keybinding handling via Application.
+
+Prints to the terminal's normal scrollback buffer (not alternate screen), so native
+text selection and scrolling work naturally. Multi-agent composition is handled by
+tmux, not the TUI — this is a single-agent interface.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
-import os
-import sys
+import time
+from markdown_it import MarkdownIt
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit import Application
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import HTML, FormattedText
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout.containers import HSplit, VSplit, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.layout.processors import BeforeInput
 from prompt_toolkit.patch_stdout import patch_stdout
-from rich.console import Console
-from rich.markup import escape
-from rich.panel import Panel
+from prompt_toolkit.shortcuts import print_formatted_text
+from prompt_toolkit.styles import Style
 
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     SystemMessage,
-    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -35,7 +44,227 @@ from ..harness import AlephHarness
 # Max lines of tool result output to show inline
 TOOL_RESULT_MAX_LINES = 10
 
-console = Console(highlight=False)
+# Semantic style map for the TUI
+TUI_STYLE = Style.from_dict({
+    "user": "ansicyan bold",
+    "assistant": "ansigreen bold",
+    "tool": "ansiyellow bold",
+    "dim": "#888888",
+    "dim-i": "#888888 italic",
+    "err": "ansired",
+    "err-b": "ansired bold",
+    "md-code": "#88c0d0",
+})
+
+
+def _tprint(html_str: str, *args, **kwargs) -> None:
+    """Print styled text to scrollback above the Application layout.
+
+    Uses prompt_toolkit's print_formatted_text which handles its own
+    run_in_terminal coordination. HTML.format() auto-escapes arguments.
+    """
+    html = HTML(html_str)
+    if args or kwargs:
+        html = html.format(*args, **kwargs)
+    print_formatted_text(html, style=TUI_STYLE)
+
+
+# ---- Markdown rendering ----
+#
+# Uses markdown-it-py to parse complete text into tokens, then converts
+# to prompt_toolkit FormattedText. Runs at commit time (not during streaming).
+
+_md = MarkdownIt("commonmark").enable("table")
+
+_StyleTuples = list[tuple[str, str]]
+
+
+def _markdown_to_ft(text: str) -> FormattedText:
+    """Convert markdown text to FormattedText via markdown-it-py."""
+    tokens = _md.parse(text)
+    result: _StyleTuples = []
+    _render_block_tokens(tokens, result)
+    # Trim trailing newlines
+    while result and result[-1][1] == "\n":
+        result.pop()
+    return FormattedText(result)
+
+
+def _render_block_tokens(tokens: list, result: _StyleTuples) -> None:
+    """Walk the flat block-level token list and render into styled tuples."""
+    i = 0
+    style_ctx: list[str] = []  # block-level styles (e.g. heading → bold)
+    list_stack: list[tuple[str, int]] = []  # ("bullet"|"ordered", counter)
+
+    while i < len(tokens):
+        tok = tokens[i]
+
+        # --- Headings ---
+        if tok.type == "heading_open":
+            style_ctx.append("bold")
+        elif tok.type == "heading_close":
+            style_ctx.pop()
+            result.append(("", "\n"))
+
+        # --- Paragraphs ---
+        elif tok.type == "paragraph_open":
+            pass
+        elif tok.type == "paragraph_close":
+            if not tok.hidden:
+                result.append(("", "\n"))
+
+        # --- Inline content ---
+        elif tok.type == "inline":
+            _render_inline(tok.children or [], result, list(style_ctx))
+
+        # --- Fenced code blocks ---
+        elif tok.type == "fence":
+            lang = tok.info.strip()
+            if lang:
+                result.append(("class:dim-i", f"  {lang}\n"))
+            for line in tok.content.rstrip("\n").split("\n"):
+                result.append(("class:md-code", f"  {line}\n"))
+
+        # --- Indented code blocks ---
+        elif tok.type == "code_block":
+            for line in tok.content.rstrip("\n").split("\n"):
+                result.append(("class:md-code", f"  {line}\n"))
+
+        # --- Lists ---
+        elif tok.type == "bullet_list_open":
+            list_stack.append(("bullet", 0))
+        elif tok.type == "bullet_list_close":
+            if list_stack:
+                list_stack.pop()
+        elif tok.type == "ordered_list_open":
+            list_stack.append(("ordered", 0))
+        elif tok.type == "ordered_list_close":
+            if list_stack:
+                list_stack.pop()
+        elif tok.type == "list_item_open":
+            if list_stack:
+                kind, count = list_stack[-1]
+                count += 1
+                list_stack[-1] = (kind, count)
+                indent = "  " * len(list_stack)
+                if kind == "bullet":
+                    result.append(("", f"{indent}\u2022 "))
+                else:
+                    result.append(("", f"{indent}{count}. "))
+        elif tok.type == "list_item_close":
+            result.append(("", "\n"))
+
+        # --- Blockquotes ---
+        elif tok.type == "blockquote_open":
+            style_ctx.append("class:dim")
+        elif tok.type == "blockquote_close":
+            if "class:dim" in style_ctx:
+                style_ctx.remove("class:dim")
+
+        # --- Horizontal rules ---
+        elif tok.type == "hr":
+            result.append(("class:dim", "\u2500" * 40 + "\n"))
+
+        # --- Tables ---
+        elif tok.type == "table_open":
+            table_tokens = []
+            i += 1
+            while i < len(tokens) and tokens[i].type != "table_close":
+                table_tokens.append(tokens[i])
+                i += 1
+            _render_table(table_tokens, result)
+
+        # --- HTML blocks (show raw) ---
+        elif tok.type == "html_block":
+            result.append(("class:dim", tok.content))
+
+        i += 1
+
+
+def _render_inline(
+    children: list, result: _StyleTuples, style_stack: list[str]
+) -> None:
+    """Render inline token children with a style stack for nesting."""
+    for tok in children:
+        if tok.type == "text":
+            style = " ".join(style_stack) if style_stack else ""
+            result.append((style, tok.content))
+        elif tok.type == "strong_open":
+            style_stack.append("bold")
+        elif tok.type == "strong_close":
+            if "bold" in style_stack:
+                style_stack.remove("bold")
+        elif tok.type == "em_open":
+            style_stack.append("italic")
+        elif tok.type == "em_close":
+            if "italic" in style_stack:
+                style_stack.remove("italic")
+        elif tok.type == "code_inline":
+            result.append(("class:md-code", tok.content))
+        elif tok.type in ("softbreak", "hardbreak"):
+            result.append(("", "\n"))
+        elif tok.type == "link_open":
+            pass  # text shows via child text tokens
+        elif tok.type == "link_close":
+            pass
+        elif tok.type == "image":
+            result.append(("class:dim", f"[image: {tok.content}]"))
+
+
+def _render_table(tokens: list, result: _StyleTuples) -> None:
+    """Render table tokens with aligned columns."""
+    rows: list[tuple[bool, list[str]]] = []  # (is_header, cells)
+    current_row: list[str] = []
+    in_header = False
+
+    for tok in tokens:
+        if tok.type == "thead_open":
+            in_header = True
+        elif tok.type == "thead_close":
+            in_header = False
+        elif tok.type == "tr_open":
+            current_row = []
+        elif tok.type == "tr_close":
+            rows.append((in_header, current_row))
+        elif tok.type == "inline":
+            current_row.append(_inline_to_plain(tok.children or []))
+
+    if not rows:
+        return
+
+    num_cols = max(len(cells) for _, cells in rows)
+    col_widths = [0] * num_cols
+    for _, cells in rows:
+        for j, cell in enumerate(cells):
+            col_widths[j] = max(col_widths[j], len(cell))
+
+    for is_hdr, cells in rows:
+        padded = [
+            (cells[j] if j < len(cells) else "").ljust(col_widths[j])
+            for j in range(num_cols)
+        ]
+        line = "  " + " \u2502 ".join(padded) + "\n"
+        if is_hdr:
+            result.append(("bold", line))
+            sep = "  " + "\u2500\u253c\u2500".join(
+                "\u2500" * w for w in col_widths
+            ) + "\n"
+            result.append(("class:dim", sep))
+        else:
+            result.append(("", line))
+
+
+def _inline_to_plain(children: list) -> str:
+    """Extract plain text from inline children (for table cell measurement)."""
+    parts = []
+    for tok in children:
+        if tok.type == "text":
+            parts.append(tok.content)
+        elif tok.type == "code_inline":
+            parts.append(tok.content)
+        elif tok.type == "softbreak":
+            parts.append(" ")
+    return "".join(parts)
 
 
 def _fmt_tokens(n: int) -> str:
@@ -143,24 +372,135 @@ def _format_tool_result(name: str, content: str | list | None, is_error: bool | 
 
 
 class AlephApp:
-    """Scrollback-mode terminal interface for Aleph."""
+    """Scrollback-mode terminal interface for Aleph.
+
+    Uses a prompt_toolkit Application (full_screen=False) for persistent
+    keybinding handling. Styled output goes to scrollback via print_formatted_text.
+    Streaming text renders in a layout Window and commits to scrollback when done.
+    """
 
     def __init__(self, harness: AlephHarness) -> None:
         self._harness = harness
-        self._stream_buffer = ""
+        self._stream_chunks: list[str] = []    # raw chunks for final markdown render
+        self._stream_lines: list[str] = []     # incrementally maintained line list for live display
         self._thinking_buffer = ""
-        self._last_tool_name = ""
+        self._tool_name_queue: list[str] = []
         self._total_input_tokens = 0
         self._total_output_tokens = 0
-        self._status = "Ready"
-        self._prompt_session = PromptSession(bottom_toolbar=self._toolbar)
+        self._receiving = False
+        self._interrupt_in_flight = False
+        self._last_invalidate = 0.0  # monotonic timestamp of last render trigger
+        self._invalidate_pending = False
+        self._app: Application | None = None
+
+        # Build the prompt_toolkit Application
+        self._input_buffer = Buffer(multiline=False)
+        kb = self._build_keybindings()
+
+        layout = Layout(
+            HSplit([
+                # Streaming display: visible only when tokens are arriving.
+                # Renders inside the layout so it doesn't conflict with
+                # run_in_terminal redraws from print_formatted_text.
+                Window(
+                    FormattedTextControl(self._get_stream_display),
+                    wrap_lines=True,
+                    dont_extend_height=True,
+                ),
+                Window(
+                    BufferControl(
+                        buffer=self._input_buffer,
+                        input_processors=[BeforeInput("> ")],
+                    ),
+                    height=1,
+                ),
+                Window(FormattedTextControl(self._toolbar), height=1),
+            ])
+        )
+
+        self._app = Application(
+            layout=layout,
+            key_bindings=kb,
+            full_screen=False,
+            style=TUI_STYLE,
+        )
+
+    # Max lines to show in the live streaming window.  Only the tail is
+    # displayed to keep prompt_toolkit's line-wrap calculation cheap.
+    _STREAM_DISPLAY_TAIL = 50
+
+    def _get_stream_display(self) -> FormattedText:
+        """Return the tail of the streaming text for the layout Window."""
+        if self._stream_lines:
+            tail = self._stream_lines[-self._STREAM_DISPLAY_TAIL :]
+            return FormattedText([("", "\n".join(tail))])
+        return FormattedText([])
+
+    def _build_keybindings(self) -> KeyBindings:
+        """Create keybindings with state-based filters."""
+        kb = KeyBindings()
+        app_ref = self  # closure reference
+
+        @Condition
+        def is_receiving():
+            return app_ref._receiving
+
+        @Condition
+        def is_idle():
+            return not app_ref._receiving
+
+        # Enter submits input (only when not receiving a response)
+        @kb.add("enter", filter=is_idle)
+        def handle_enter(event):
+            text = app_ref._input_buffer.text.strip()
+            if not text:
+                return
+
+            app_ref._input_buffer.reset()
+
+            if text == "/exit":
+                event.app.exit()
+                return
+
+            # Lock out further submissions immediately (before ensure_future yields)
+            app_ref._receiving = True
+            if app_ref._app:
+                app_ref._app.invalidate()
+
+            # Print the user's message
+            _tprint("<user>You:</user> {}", text)
+
+            # Run response as background task — Application keeps processing keys
+            asyncio.ensure_future(app_ref._send_and_receive(text))
+
+        # Escape interrupts the current response
+        @kb.add("escape", filter=is_receiving)
+        def handle_escape(event):
+            asyncio.ensure_future(app_ref._do_interrupt())
+
+        # Ctrl+C exits (interrupts first if receiving)
+        @kb.add("c-c")
+        async def handle_quit(event):
+            if app_ref._receiving:
+                await app_ref._do_interrupt()
+            event.app.exit()
+
+        return kb
 
     def _toolbar(self) -> HTML:
         """Build the persistent bottom toolbar content."""
-        parts = [self._status, self._harness.agent_id]
+        if self._receiving:
+            status = "Working..."
+        else:
+            status = "Ready"
+        parts = [status, self._harness.agent_id]
         total = self._total_input_tokens + self._total_output_tokens
         if total:
             parts.append(f"{_fmt_tokens(total)} tokens")
+
+        if self._receiving:
+            parts.append("Esc to interrupt")
+
         return HTML(f" {' | '.join(parts)}")
 
     def run(self) -> None:
@@ -168,79 +508,112 @@ class AlephApp:
         asyncio.run(self._main())
 
     async def _main(self) -> None:
-        """Main async loop: connect, then alternate between input and response."""
-        console.print(f"[dim]Connecting...[/dim]")
+        """Main async loop: connect, then run the Application."""
+        _tprint("<dim>Connecting...</dim>")
 
         try:
             await self._harness.start()
         except Exception as e:
-            console.print(f"[red bold]Connection error:[/red bold] {e}")
+            _tprint("<err-b>Connection error:</err-b> {}", str(e))
             return
 
-        console.print(f"[dim]Session started: {self._harness.agent_id}[/dim]\n")
+        _tprint("<dim>Session started: {}</dim>\n", self._harness.agent_id)
 
         try:
-            await self._input_loop()
+            with patch_stdout():
+                # Auto-send initial prompt if provided (e.g. subagent launch)
+                initial_prompt = self._harness.config.prompt
+                if initial_prompt:
+                    _tprint("<user>Prompt:</user> {}", initial_prompt)
+
+                    async def send_initial():
+                        await asyncio.sleep(0)  # yield once to let Application start
+                        await self._send_and_receive(initial_prompt)
+
+                    asyncio.ensure_future(send_initial())
+
+                await self._app.run_async()
         except (KeyboardInterrupt, EOFError):
             pass
         finally:
-            console.print(f"\n[dim]Disconnecting...[/dim]")
+            _tprint("\n<dim>Disconnecting...</dim>")
             await self._harness.stop()
 
-    async def _input_loop(self) -> None:
-        """Read user input and send to the agent."""
-        while True:
-            try:
-                with patch_stdout():
-                    text = await self._prompt_session.prompt_async(
-                        "\n> ",
-                    )
-            except (KeyboardInterrupt, EOFError):
-                return
+    # Minimum interval between render invalidations during streaming (seconds).
+    # 30fps is imperceptible for text; halves prompt_toolkit rendering overhead.
+    _INVALIDATE_INTERVAL = 0.033
 
-            text = text.strip()
-            if not text:
-                continue
+    def _throttled_invalidate(self) -> None:
+        """Request a render, throttled to _INVALIDATE_INTERVAL during streaming."""
+        now = time.monotonic()
+        elapsed = now - self._last_invalidate
+        if elapsed >= self._INVALIDATE_INTERVAL:
+            self._app.invalidate()
+            self._last_invalidate = now
+            self._invalidate_pending = False
+        elif not self._invalidate_pending:
+            self._invalidate_pending = True
+            delay = self._INVALIDATE_INTERVAL - elapsed
+            loop = asyncio.get_event_loop()
+            loop.call_later(delay, self._deferred_invalidate)
 
-            if text == "/exit":
-                return
-
-            # Erase the raw prompt echo and replace with styled version.
-            # Account for line wrapping: count how many terminal lines were used.
-            cols = os.get_terminal_size().columns
-            prompt_display = f"> {text}"
-            # Lines from text wrapping + 1 for the blank line from \n prefix
-            wrapped_lines = (len(prompt_display) + cols - 1) // cols
-            erase_lines = wrapped_lines + 1  # +1 for the \n before >
-            sys.stdout.write(f"\x1b[{erase_lines}A\x1b[J")
-            console.print(f"[bold cyan]You:[/bold cyan] {escape(text)}")
-            await self._send_and_receive(text)
+    def _deferred_invalidate(self) -> None:
+        """Fire a deferred invalidate from the throttle timer."""
+        if self._invalidate_pending:
+            self._app.invalidate()
+            self._last_invalidate = time.monotonic()
+            self._invalidate_pending = False
 
     async def _send_and_receive(self, text: str) -> None:
         """Send a message and render the full response."""
-        self._stream_buffer = ""
+        self._stream_chunks = []
+        self._stream_lines = []
         self._thinking_buffer = ""
+        # _receiving is set True by the caller (handle_enter) synchronously
+        # to prevent race conditions with double-Enter.
+        self._receiving = True
+
+        # Suppress GC during streaming — prompt_toolkit's rendering creates
+        # heavy allocation churn that triggers gen-2 collections (80-200ms
+        # stop-the-world pauses). Safe because streaming is bounded and
+        # doesn't create reference cycles that would leak.
+        gc.disable()
 
         try:
             await self._harness.send(text)
 
             async for msg in self._harness.receive():
                 self._handle_sdk_message(msg)
+                # Yield to the event loop after streaming updates so the
+                # renderer can redraw the layout Window with new tokens.
+                if self._stream_chunks:
+                    await asyncio.sleep(0)
 
-            # Flush any remaining buffers
             self._commit_stream()
             self._commit_thinking()
 
-        except KeyboardInterrupt:
-            self._commit_stream()
-            self._commit_thinking()
-            console.print("\n[dim italic]--- interrupted ---[/dim italic]")
-            try:
-                await self._harness.interrupt()
-            except Exception:
-                pass
         except Exception as e:
-            console.print(f"\n[red bold]Error:[/red bold] {e}")
+            _tprint("\n<err-b>Error:</err-b> {}", str(e))
+        finally:
+            gc.enable()
+            gc.collect()
+            self._receiving = False
+            self._interrupt_in_flight = False
+            if self._app:
+                self._app.invalidate()
+
+    async def _do_interrupt(self) -> None:
+        """Interrupt the current response."""
+        if not self._receiving or self._interrupt_in_flight:
+            return
+        self._interrupt_in_flight = True
+        self._commit_stream()
+        self._commit_thinking()
+        _tprint("\n<dim-i>--- interrupted ---</dim-i>")
+        try:
+            await self._harness.interrupt()
+        except Exception:
+            pass
 
     def _handle_sdk_message(self, msg: object) -> None:
         """Route an incoming SDK message to the appropriate handler."""
@@ -261,7 +634,7 @@ class AlephApp:
         elif isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if isinstance(block, ToolUseBlock):
-                    self._last_tool_name = block.name
+                    self._tool_name_queue.append(block.name)
                     self._on_tool_call_start(block.name, block.input)
 
         elif isinstance(msg, UserMessage):
@@ -269,8 +642,9 @@ class AlephApp:
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, ToolResultBlock):
+                        tool_name = self._tool_name_queue.pop(0) if self._tool_name_queue else ""
                         self._on_tool_call_result(
-                            self._last_tool_name, block.content, block.is_error
+                            tool_name, block.content, block.is_error
                         )
 
         elif isinstance(msg, ResultMessage):
@@ -278,26 +652,34 @@ class AlephApp:
 
         elif isinstance(msg, SystemMessage):
             if msg.subtype not in ("init",):
-                console.print(f"[dim italic]System: {msg.subtype}[/dim italic]")
+                _tprint("<dim-i>System: {}</dim-i>", msg.subtype)
 
     # ---- Rendering ----
 
     def _on_stream_text(self, text: str) -> None:
         """Handle a chunk of streamed text."""
-        if not self._stream_buffer:
-            # First text chunk — flush thinking and print assistant label
+        if not self._stream_chunks:
             self._commit_thinking()
-            console.print("\n[bold green]Assistant:[/bold green]")
+            _tprint("\n<assistant>Assistant:</assistant>")
 
-        self._stream_buffer += text
-        # Print the chunk inline (no newline) for real-time streaming
-        sys.stdout.write(text)
-        sys.stdout.flush()
+        self._stream_chunks.append(text)
+
+        # Incrementally update the line list: split the chunk on newlines,
+        # extend the current (last) line, and append any new lines.
+        parts = text.split("\n")
+        if self._stream_lines:
+            self._stream_lines[-1] += parts[0]
+        else:
+            self._stream_lines.append(parts[0])
+        for part in parts[1:]:
+            self._stream_lines.append(part)
+
+        self._throttled_invalidate()
 
     def _on_stream_thinking(self, text: str) -> None:
         """Handle a chunk of streamed thinking text."""
         if not self._thinking_buffer:
-            console.print("\n[dim italic]Thinking...[/dim italic]")
+            _tprint("\n<dim-i>Thinking...</dim-i>")
 
         self._thinking_buffer += text
 
@@ -306,11 +688,11 @@ class AlephApp:
         self._commit_stream()
         self._commit_thinking()
 
-        console.print(f"\n  [bold yellow]\u2192 {name}[/bold yellow]")
+        _tprint("\n  <tool>\u2192 {}</tool>", name)
         details = _format_tool_input(name, input)
         if details:
             for line in details.split("\n"):
-                console.print(f"    [dim]{escape(line)}[/dim]")
+                _tprint("    <dim>{}</dim>", line)
 
     def _on_tool_call_result(
         self, name: str, content: str | list | None, is_error: bool | None
@@ -319,9 +701,9 @@ class AlephApp:
         formatted = _format_tool_result(name, content, is_error)
         for line in formatted.split("\n"):
             if is_error:
-                console.print(f"    [red]{escape(line)}[/red]")
+                _tprint("    <err>{}</err>", line)
             else:
-                console.print(f"    [dim]{escape(line)}[/dim]")
+                _tprint("    <dim>{}</dim>", line)
 
     def _on_turn_complete(self, msg: ResultMessage) -> None:
         """Render turn completion stats."""
@@ -341,22 +723,26 @@ class AlephApp:
         if total:
             parts.append(f"total: {_fmt_tokens(total)}")
         summary = "  |  ".join(parts)
-        console.print(f"\n[dim]--- {summary} ---[/dim]")
+        _tprint("\n<dim>--- {} ---</dim>", summary)
 
     # ---- Helpers ----
 
     def _commit_stream(self) -> None:
-        """Finalize the streaming text buffer."""
-        if self._stream_buffer:
-            # The text was already printed char-by-char via sys.stdout.write.
-            # Just add a newline to close it out.
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-            self._stream_buffer = ""
+        """Move streaming text from the layout Window to scrollback.
+
+        Renders the complete text with markdown formatting for the scrollback
+        version (bold, italic, code, headings, fenced code blocks).
+        """
+        if self._stream_chunks:
+            full_text = "".join(self._stream_chunks)
+            print_formatted_text(_markdown_to_ft(full_text), style=TUI_STYLE)
+            self._stream_chunks = []
+            self._stream_lines = []
+            self._app.invalidate()
 
     def _commit_thinking(self) -> None:
         """Flush the thinking buffer as dimmed text."""
         if self._thinking_buffer:
             for line in self._thinking_buffer.split("\n"):
-                console.print(f"[dim italic]{escape(line)}[/dim italic]")
+                _tprint("<dim-i>{}</dim-i>", line)
             self._thinking_buffer = ""

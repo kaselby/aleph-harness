@@ -6,12 +6,39 @@ from pathlib import Path
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 
-def create_aleph_mcp_server(inbox_root: Path):
+def create_aleph_mcp_server(inbox_root: Path, skills_path: Path):
     """Create the Aleph MCP server with framework-specific tools.
 
     Args:
         inbox_root: Root inbox directory (e.g. ~/.aleph/inbox/).
+        skills_path: Skills directory (e.g. ~/.aleph/skills/).
     """
+
+    @tool(
+        "activate_skill",
+        "Activate a skill by name. Loads the skill's instructions as system-level "
+        "context for the remainder of the session. Use this when your task calls for "
+        "a specific skill listed in your session context.",
+        {"name": str},
+    )
+    async def activate_skill(args: dict) -> dict:
+        name = args["name"]
+        skill_md = skills_path / name / "SKILL.md"
+
+        if not skill_md.exists():
+            return {
+                "content": [{"type": "text", "text": f"Error: skill '{name}' not found."}],
+                "isError": True,
+            }
+
+        content = skill_md.read_text()
+
+        # Strip YAML frontmatter — the model doesn't need the metadata
+        if content.startswith("---"):
+            end = content.index("---", 3)
+            content = content[end + 3:].strip()
+
+        return {"content": [{"type": "text", "text": content}]}
 
     @tool(
         "send_message",
@@ -57,5 +84,5 @@ def create_aleph_mcp_server(inbox_root: Path):
     return create_sdk_mcp_server(
         name="aleph",
         version="0.1.0",
-        tools=[send_message],
+        tools=[activate_skill, send_message],
     )

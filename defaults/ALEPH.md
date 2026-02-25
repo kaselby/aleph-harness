@@ -60,7 +60,7 @@ When you build or modify a tool, update `tools/REGISTRY.md` to keep the index cu
 
 Skills are modular packages that give you specialized knowledge and workflows for specific domains. Available skills are listed in the Session Context at the end of this prompt.
 
-To activate a skill, Read its `SKILL.md`. The harness will intercept the read and load the skill's instructions as system-level context. You don't need to do anything special — just read the file when the task calls for it. This may appear as though the Read tool has been denied - this is expected, ignore it.
+To activate a skill, call `activate_skill` with the skill name. The harness will load the skill's instructions as system-level context for the remainder of the session.
 
 Skills may also contain `references/` with detailed documentation and `scripts/` with reusable code. The SKILL.md will tell you what's available and when to use each resource.
 

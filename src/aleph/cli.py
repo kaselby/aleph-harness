@@ -28,6 +28,10 @@ def parse_args() -> argparse.Namespace:
         help="Parent agent ID (for spawned subagents)",
     )
     parser.add_argument(
+        "--prompt",
+        help="Initial prompt (sent automatically on session start)",
+    )
+    parser.add_argument(
         "--depth",
         type=int,
         default=0,
@@ -43,6 +47,7 @@ def main():
         agent_id=args.id,
         model=args.model,
         project=args.project,
+        prompt=args.prompt,
         parent=args.parent,
         depth=args.depth,
     )

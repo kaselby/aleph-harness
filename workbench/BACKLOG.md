@@ -81,6 +81,7 @@ Running `claude config list` or `claude config get model` from within an Aleph s
 - Zettelkasten-style knowledge store for memory overflow
 - Vector DB / embedding-based retrieval
 - TUI: diff view, syntax highlighting, rewind/fork
+- TUI: live markdown rendering during streaming (study `markdown-it-py` as parser — it's what Textual uses under the hood. Feed token stream into a FormattedText builder. Current approach: plain streaming → markdown-rendered scrollback at commit time.)
 - `/command` shortcuts in TUI for skill activation
 - Stop hook for catching unread messages at turn end
 - PreCompact hook for persisting critical context before compaction

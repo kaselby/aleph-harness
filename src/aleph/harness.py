@@ -14,19 +14,25 @@ from claude_agent_sdk import (
     HookMatcher,
 )
 
-# Model generation prefix → knowledge cutoff
-# Update this when new model generations are released.
+# Alias → full model ID. Used to resolve shorthand names (including "default")
+# to the actual model string before building the system prompt.
+# Update when Claude Code changes its default or new model families are released.
+MODEL_ALIASES = {
+    "default": "claude-opus-4-6",
+    "opus": "claude-opus-4-6",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5-20251001",
+}
+
+# Model ID prefix → knowledge cutoff date. Prefixes are matched in order,
+# so more specific prefixes should come first.
 KNOWLEDGE_CUTOFFS = {
     "claude-opus-4": "May 2025",
     "claude-sonnet-4": "May 2025",
     "claude-haiku-4": "May 2025",
-    "claude-3.5": "Early 2024",
+    "claude-3-5": "Early 2024",
     "claude-3": "Early 2024",
 }
-
-# Claude Code's default model when none is specified via --model.
-# Update this when Claude Code changes its default.
-CLAUDE_CODE_DEFAULT_MODEL = "claude-opus-4-6"
 
 
 def _discover_skills(skills_path) -> list[dict]:
@@ -54,12 +60,14 @@ def _discover_skills(skills_path) -> list[dict]:
 
 
 def _resolve_model(model: str | None) -> str:
-    """Resolve the effective model name, falling back to the Claude Code default."""
-    return model or CLAUDE_CODE_DEFAULT_MODEL
+    """Resolve a model name through aliases, falling back to the default alias."""
+    if model is None:
+        model = "default"
+    return MODEL_ALIASES.get(model, model)
 
 
 def _get_knowledge_cutoff(model: str) -> str:
-    """Look up the knowledge cutoff for a model string."""
+    """Look up the knowledge cutoff for a model string by prefix match."""
     for prefix, cutoff in KNOWLEDGE_CUTOFFS.items():
         if model.startswith(prefix):
             return cutoff
@@ -72,7 +80,7 @@ from .hooks import (
     create_inbox_check_hook,
     create_read_tracking_hook,
     create_reminder_hook,
-    create_skill_activation_hook,
+    create_skill_context_hook,
 )
 from .tools import create_aleph_mcp_server
 
@@ -85,6 +93,8 @@ class AlephHarness:
         self.agent_id = config.agent_id or f"aleph-{uuid.uuid4().hex[:8]}"
         self.session_id: str | None = None
         self._client: ClaudeSDKClient | None = None
+        self._expected_model = _resolve_model(config.model)
+        self._model_verified = False
 
     def _build_options(self) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions from config."""
@@ -121,7 +131,7 @@ class AlephHarness:
             ctx += "\nAvailable skills:\n"
             for s in skills:
                 ctx += f"- **{s['name']}** ({s['path']}): {s['description']}\n"
-            ctx += "\nRead the skill's SKILL.md before using it.\n"
+            ctx += "\nUse `activate_skill` to load a skill before using it.\n"
 
         ctx += f"\nToday's date is **{date.today().strftime('%B %d, %Y')}**."
 
@@ -135,23 +145,21 @@ class AlephHarness:
         inbox_check = create_inbox_check_hook(inbox)
         read_tracker = create_read_tracking_hook(inbox)
         reminder = create_reminder_hook(interval=50)
-        skill_activator = create_skill_activation_hook(self.config.skills_path)
+        skill_context = create_skill_context_hook(self.config.skills_path)
 
         hooks = {
-            "PreToolUse": [
-                # Intercept SKILL.md reads and inject as system context
-                HookMatcher(matcher="Read", hooks=[skill_activator]),
-            ],
             "PostToolUse": [
                 # Inbox check fires on every tool call
                 HookMatcher(matcher=None, hooks=[inbox_check, reminder]),
                 # Read tracking only fires when the agent uses Read
                 HookMatcher(matcher="Read", hooks=[read_tracker]),
+                # Skill activation: replace MCP tool output with system context
+                HookMatcher(matcher="mcp__aleph__activate_skill", hooks=[skill_context]),
             ],
         }
 
         # Build MCP server for framework tools
-        aleph_server = create_aleph_mcp_server(self.config.inbox_path)
+        aleph_server = create_aleph_mcp_server(self.config.inbox_path, self.config.skills_path)
 
         # tools controls which tool schemas the model sees (--tools flag).
         # allowed_tools is an additional execution-level whitelist (--allowedTools).
