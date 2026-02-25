@@ -1,0 +1,110 @@
+# Aleph — Task Tracker
+# Status: open | in-progress | done | blocked
+# Updated: 2026-02-24
+
+tasks:
+  - id: 1
+    description: Project scaffolding
+    status: done
+
+  - id: 2
+    description: Harness core — SDK integration
+    status: done
+
+  - id: 3
+    description: Hooks
+    status: done
+
+  - id: 4
+    description: Messaging infrastructure
+    status: done
+
+  - id: 5
+    description: System prompt
+    status: done
+
+  - id: 6
+    description: Skills infrastructure
+    status: done
+
+  - id: 7
+    description: First smoke test (restricted tools)
+    status: done
+    notes: >
+      Ran successfully. Aleph connected, read her memory and registry to orient,
+      wrote hello.md. Several issues discovered — see below.
+
+  - id: 8
+    description: Fix tool schema visibility (allowed_tools vs tools)
+    status: done
+    notes: >
+      RESOLVED: allowed_tools (--allowedTools) only gates execution, not schema
+      visibility. The model still saw all 18 CC built-in tool schemas. Fix: use the
+      tools parameter (--tools) to control which tool schemas the model receives.
+      Set tools=BASE_TOOLS in harness. Now Aleph sees only our 6 tools + MCP tools.
+      Residual: CC's Bash tool description internally references Glob/Grep/TodoWrite
+      — baked into CC's schema text, can't control. Minor noise, model handles it fine.
+
+  - id: 9
+    description: Fix duplicate text output (StreamEvent + AssistantMessage)
+    status: done
+    notes: >
+      Fixed in TUI: _handle_sdk_message renders text only from StreamEvent deltas.
+      AssistantMessage text is explicitly skipped (comment: "Text content is a
+      duplicate of stream events -- skip it"), and only ToolUseBlocks are extracted
+      from AssistantMessage.
+
+  - id: 10
+    description: Fix nested session detection (CLAUDECODE env var)
+    status: done
+    notes: >
+      SDK refuses to launch inside a Claude Code session. Fixed by unsetting
+      CLAUDECODE env var in harness.py at module load.
+
+  - id: 11
+    description: Address hallucinated tools/skills in system prompt
+    status: done
+    notes: >
+      RESOLVED: Root cause was missing `tools` parameter (see task 8). CC was passing
+      all 18 built-in tool schemas regardless of allowed_tools. Fix: set tools=BASE_TOOLS.
+      Parent session skills (keybindings-help) leaked via <system-reminder> tags injected
+      into user messages by CC runtime — these are gone now that we control the tool set.
+      CC prepends "You are a Claude agent, built on Anthropic's Claude Agent SDK." before
+      our system prompt — minor, not worth fighting. --setting-sources "" correctly
+      prevents CLAUDE.md loading.
+
+  - id: 12
+    description: Permissions / safety
+    status: open
+    subtasks:
+      - id: 12.1
+        description: Implement can_use_tool callback (log all tool calls, gate Bash)
+        status: open
+      - id: 12.2
+        description: Basic file logging of message stream
+        status: open
+
+  - id: 13
+    description: Starter tools
+    status: open
+    subtasks:
+      - id: 13.1
+        description: list-agents tool
+        status: open
+
+  - id: 14
+    description: TUI (Python Textual)
+    status: open
+    subtasks:
+      - id: 14.1
+        description: Basic chat display (render AssistantMessage, ToolUseBlock, ResultMessage)
+        status: open
+      - id: 14.2
+        description: User input
+        status: open
+      - id: 14.3
+        description: Streaming text display (StreamEvent handling)
+        status: open
+      - id: 14.4
+        description: Multi-agent tabs
+        status: open

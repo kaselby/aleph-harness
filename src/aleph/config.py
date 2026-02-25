@@ -5,8 +5,9 @@ from pathlib import Path
 
 ALEPH_HOME = Path.home() / ".aleph"
 
-# Tools the agent is allowed to use
-ALLOWED_TOOLS = [
+# Base tool set — controls which tool schemas the model sees.
+# This is passed as --tools to the CLI and determines what's in the model's context.
+BASE_TOOLS = [
     "Bash",
     "Read",
     "Write",
@@ -14,6 +15,11 @@ ALLOWED_TOOLS = [
     "WebSearch",
     "WebFetch",
 ]
+
+# Execution-level whitelist — controls which tools the model can actually call.
+# Passed as --allowedTools. Must be a subset of BASE_TOOLS + any MCP tools.
+# When empty, all BASE_TOOLS are allowed.
+ALLOWED_TOOLS = []
 
 
 @dataclass

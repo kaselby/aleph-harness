@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Create the ~/.aleph/ directory structure and assemble the system prompt."""
 
+import os
 import shutil
+import venv
 from pathlib import Path
 
 ALEPH_HOME = Path.home() / ".aleph"
@@ -13,7 +15,6 @@ DIRS = [
     "docs",
     "inbox",
     "scratch",
-    "harness",
 ]
 
 
@@ -35,6 +36,7 @@ def assemble_system_prompt() -> str:
 def scaffold():
     """Create the ~/.aleph/ directory structure."""
     print(f"Creating Aleph home at {ALEPH_HOME}")
+    ALEPH_HOME.mkdir(parents=True, exist_ok=True)
 
     # Create directories
     for d in DIRS:
@@ -42,14 +44,39 @@ def scaffold():
         path.mkdir(parents=True, exist_ok=True)
         print(f"  Created {path}")
 
-    # Assemble and write system prompt
-    dst_prompt = ALEPH_HOME / "ALEPH.md"
-    if dst_prompt.exists():
-        print(f"  Skipped {dst_prompt} (already exists)")
+    # Symlink harness/ to the repo so edits are live and git works
+    harness_link = ALEPH_HOME / "harness"
+    if harness_link.is_symlink():
+        current_target = harness_link.resolve()
+        if current_target == REPO_ROOT.resolve():
+            print(f"  Symlink {harness_link} -> {REPO_ROOT} (already correct)")
+        else:
+            harness_link.unlink()
+            os.symlink(REPO_ROOT, harness_link)
+            print(f"  Symlink {harness_link} -> {REPO_ROOT} (updated from {current_target})")
+    elif harness_link.exists():
+        # Old-style copy — remove and replace with symlink
+        shutil.rmtree(harness_link)
+        os.symlink(REPO_ROOT, harness_link)
+        print(f"  Symlink {harness_link} -> {REPO_ROOT} (replaced copy)")
     else:
-        prompt = assemble_system_prompt()
-        dst_prompt.write_text(prompt)
-        print(f"  Assembled {dst_prompt}")
+        os.symlink(REPO_ROOT, harness_link)
+        print(f"  Symlink {harness_link} -> {REPO_ROOT}")
+
+    # Create venv if it doesn't exist
+    venv_path = ALEPH_HOME / "venv"
+    if venv_path.exists():
+        print(f"  Skipped {venv_path} (already exists)")
+    else:
+        print(f"  Creating venv at {venv_path}...")
+        venv.create(venv_path, with_pip=True)
+        print(f"  Created {venv_path}")
+
+    # Assemble and write system prompt (always overwrite)
+    dst_prompt = ALEPH_HOME / "ALEPH.md"
+    prompt = assemble_system_prompt()
+    dst_prompt.write_text(prompt)
+    print(f"  Assembled {dst_prompt}")
 
     # Create empty memory.md if it doesn't exist
     memory = ALEPH_HOME / "memory.md"
@@ -66,14 +93,6 @@ def scaffold():
     else:
         registry.write_text("")
         print(f"  Created {registry}")
-
-    # Copy harness source code
-    src_dir = REPO_ROOT / "src" / "aleph"
-    dst_dir = ALEPH_HOME / "harness"
-    if src_dir.exists():
-        for py_file in src_dir.glob("*.py"):
-            shutil.copy2(py_file, dst_dir / py_file.name)
-        print(f"  Copied harness source to {dst_dir}")
 
     # Copy default skills
     skills_src = REPO_ROOT / "defaults" / "skills"

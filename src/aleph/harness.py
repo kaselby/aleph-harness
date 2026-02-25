@@ -24,6 +24,10 @@ KNOWLEDGE_CUTOFFS = {
     "claude-3": "Early 2024",
 }
 
+# Claude Code's default model when none is specified via --model.
+# Update this when Claude Code changes its default.
+CLAUDE_CODE_DEFAULT_MODEL = "claude-opus-4-6"
+
 
 def _discover_skills(skills_path) -> list[dict]:
     """Scan the skills directory and extract name + description from SKILL.md frontmatter."""
@@ -49,10 +53,13 @@ def _discover_skills(skills_path) -> list[dict]:
     return skills
 
 
-def _get_knowledge_cutoff(model: str | None) -> str:
+def _resolve_model(model: str | None) -> str:
+    """Resolve the effective model name, falling back to the Claude Code default."""
+    return model or CLAUDE_CODE_DEFAULT_MODEL
+
+
+def _get_knowledge_cutoff(model: str) -> str:
     """Look up the knowledge cutoff for a model string."""
-    if not model:
-        return "unknown"
     for prefix, cutoff in KNOWLEDGE_CUTOFFS.items():
         if model.startswith(prefix):
             return cutoff
@@ -60,7 +67,7 @@ def _get_knowledge_cutoff(model: str | None) -> str:
 
 import yaml
 
-from .config import ALLOWED_TOOLS, AlephConfig
+from .config import ALLOWED_TOOLS, BASE_TOOLS, AlephConfig
 from .hooks import (
     create_inbox_check_hook,
     create_read_tracking_hook,
@@ -84,8 +91,8 @@ class AlephHarness:
         system_prompt = self.config.load_system_prompt()
 
         # Append dynamic session context
-        model = self.config.model or "default"
-        cutoff = _get_knowledge_cutoff(self.config.model)
+        model = _resolve_model(self.config.model)
+        cutoff = _get_knowledge_cutoff(model)
         cwd = self.config.project or os.getcwd()
 
         ctx = "\n\n---\n## Session Context\n\n"
@@ -98,9 +105,9 @@ class AlephHarness:
         ctx += f"\nModel: {model}\n"
         if cutoff == "unknown":
             ctx += (
-                f"Knowledge cutoff: **UNKNOWN — IMPORTANT: the model '{model}' is not in "
-                f"the harness's KNOWLEDGE_CUTOFFS dict. Look up the correct cutoff date "
-                f"and update ~/.aleph/harness/harness.py. Notify the user.**\n"
+                f"Knowledge cutoff: **UNKNOWN — the model '{model}' doesn't match any "
+                f"prefix in KNOWLEDGE_CUTOFFS. Update harness.py if a new model generation "
+                f"has been released.**\n"
             )
         else:
             ctx += f"Knowledge cutoff: {cutoff}\n"
@@ -146,8 +153,11 @@ class AlephHarness:
         # Build MCP server for framework tools
         aleph_server = create_aleph_mcp_server(self.config.inbox_path)
 
-        # Build allowed tools list including our MCP tools
-        allowed = list(ALLOWED_TOOLS) + ["mcp__aleph__send_message"]
+        # tools controls which tool schemas the model sees (--tools flag).
+        # allowed_tools is an additional execution-level whitelist (--allowedTools).
+        # When ALLOWED_TOOLS is empty, all BASE_TOOLS are callable.
+        tools = list(BASE_TOOLS)
+        allowed = list(ALLOWED_TOOLS) + ["mcp__aleph__send_message"] if ALLOWED_TOOLS else []
 
         # Set working directory
         cwd = self.config.project or os.getcwd()
@@ -162,6 +172,7 @@ class AlephHarness:
 
         return ClaudeAgentOptions(
             system_prompt=full_prompt,
+            tools=tools,
             allowed_tools=allowed,
             hooks=hooks,
             mcp_servers={"aleph": aleph_server},
@@ -190,6 +201,11 @@ class AlephHarness:
             raise RuntimeError("Harness not started. Call start() first.")
         async for msg in self._client.receive_response():
             yield msg
+
+    async def interrupt(self):
+        """Interrupt the agent's current turn."""
+        if self._client:
+            await self._client.interrupt()
 
     async def stop(self):
         """Disconnect the agent session."""

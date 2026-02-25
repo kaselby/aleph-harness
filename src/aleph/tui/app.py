@@ -1,13 +1,23 @@
-"""Aleph TUI application -- main Textual app."""
+"""Aleph TUI — scrollback-mode terminal interface.
+
+Uses Rich for formatted output and prompt_toolkit for input.
+Prints to the terminal's normal scrollback buffer (not alternate screen),
+so native text selection and scrolling work naturally.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 
-from textual import work
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.widgets import Input, RichLog, Static
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.patch_stdout import patch_stdout
+from rich.console import Console
+from rich.live import Live
+from rich.markup import escape
+from rich.text import Text
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -21,18 +31,11 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import StreamEvent
 
 from ..harness import AlephHarness
-from .messages import (
-    HarnessError,
-    HarnessReady,
-    StreamText,
-    StreamThinking,
-    ToolCallResult,
-    ToolCallStart,
-    TurnComplete,
-)
 
 # Max lines of tool result output to show inline
 TOOL_RESULT_MAX_LINES = 10
+
+console = Console(highlight=False)
 
 
 def _fmt_tokens(n: int) -> str:
@@ -82,7 +85,6 @@ def _format_tool_input(name: str, input: dict) -> str:
         case "WebFetch":
             return input.get("url", "")
         case _:
-            # MCP tools or unknown — compact JSON
             compact = json.dumps(input, separators=(",", ":"))
             if len(compact) > 120:
                 return compact[:117] + "..."
@@ -92,11 +94,10 @@ def _format_tool_input(name: str, input: dict) -> str:
 def _format_tool_result(name: str, content: str | list | None, is_error: bool | None) -> str:
     """Format tool result for display — summary line + truncated output."""
     if content is None:
-        return "[dim](no output)[/dim]"
+        return "(no output)"
 
     # Normalize content to string
     if isinstance(content, list):
-        # List of content blocks from the SDK
         parts = []
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text":
@@ -108,161 +109,134 @@ def _format_tool_result(name: str, content: str | list | None, is_error: bool | 
         text = str(content)
 
     if not text.strip():
-        return "[dim](empty)[/dim]"
+        return "(empty)"
 
     lines = text.split("\n")
 
-    # Build summary based on tool type
     if is_error:
-        # Always show full error text
         error_text = text[:500]
         if len(text) > 500:
             error_text += f"\n... ({len(text) - 500} more chars)"
-        return f"[red]Error:[/red]\n{error_text}"
+        return f"Error:\n{error_text}"
 
     match name:
         case "Read":
-            summary = f"[dim]{len(lines)} lines[/dim]"
+            summary = f"{len(lines)} lines"
         case "Bash":
-            summary = "[dim]output:[/dim]"
+            summary = "output:"
         case "Write":
-            summary = f"[dim]wrote {len(text)} bytes[/dim]"
+            summary = f"wrote {len(text)} bytes"
         case "Edit":
-            summary = "[dim]applied[/dim]"
+            summary = "applied"
         case _:
             summary = ""
 
-    # Truncate output
     if len(lines) <= TOOL_RESULT_MAX_LINES:
         output = text
     else:
         output = "\n".join(lines[:TOOL_RESULT_MAX_LINES])
-        output += f"\n[dim]... ({len(lines) - TOOL_RESULT_MAX_LINES} more lines)[/dim]"
+        output += f"\n... ({len(lines) - TOOL_RESULT_MAX_LINES} more lines)"
 
     if summary:
         return f"{summary}\n{output}"
     return output
 
 
-class AlephApp(App):
-    """Terminal UI for Aleph."""
-
-    TITLE = "Aleph"
-
-    CSS = """
-    #chat-log {
-        height: 1fr;
-        scrollbar-size: 1 1;
-    }
-
-    #streaming-text {
-        height: auto;
-        max-height: 50vh;
-        padding: 0 1;
-        display: none;
-    }
-
-    #streaming-text.visible {
-        display: block;
-    }
-
-    #status-bar {
-        height: 1;
-        background: $surface;
-        color: $text-muted;
-        padding: 0 1;
-    }
-
-    #input-box {
-        dock: bottom;
-        margin: 0 0;
-    }
-    """
-
-    BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", show=True),
-        Binding("escape", "interrupt", "Interrupt", show=True),
-    ]
+class AlephApp:
+    """Scrollback-mode terminal interface for Aleph."""
 
     def __init__(self, harness: AlephHarness) -> None:
-        super().__init__()
         self._harness = harness
-        self._receiving = False
         self._stream_buffer = ""
         self._thinking_buffer = ""
         self._last_tool_name = ""
         self._total_input_tokens = 0
         self._total_output_tokens = 0
+        self._status = "Ready"
+        self._prompt_session = PromptSession(bottom_toolbar=self._toolbar)
 
-    def compose(self) -> ComposeResult:
-        yield RichLog(id="chat-log", wrap=True, markup=True)
-        yield Static("", id="streaming-text")
-        yield Static("Connecting...", id="status-bar")
-        yield Input(placeholder="Type a message...", id="input-box", disabled=True)
+    def _toolbar(self) -> HTML:
+        """Build the persistent bottom toolbar content."""
+        parts = [self._status, self._harness.agent_id]
+        total = self._total_input_tokens + self._total_output_tokens
+        if total:
+            parts.append(f"{_fmt_tokens(total)} tokens")
+        return HTML(f" {' | '.join(parts)}")
 
-    def on_mount(self) -> None:
-        self._connect_harness()
+    def run(self) -> None:
+        """Run the TUI event loop."""
+        asyncio.run(self._main())
 
-    @work(thread=False)
-    async def _connect_harness(self) -> None:
+    async def _main(self) -> None:
+        """Main async loop: connect, then alternate between input and response."""
+        console.print(f"[dim]Connecting...[/dim]")
+
         try:
             await self._harness.start()
-            self.post_message(HarnessReady())
         except Exception as e:
-            self.post_message(HarnessError(str(e)))
-
-    def on_harness_ready(self, message: HarnessReady) -> None:
-        self._update_status("Ready")
-        input_box = self.query_one("#input-box", Input)
-        input_box.disabled = False
-        input_box.focus()
-        log = self.query_one("#chat-log", RichLog)
-        log.write(f"[dim]Session started: {self._harness.agent_id}[/dim]")
-
-    def on_harness_error(self, message: HarnessError) -> None:
-        status = self.query_one("#status-bar", Static)
-        status.update(f"[red]Error: {message.error}[/red]")
-        log = self.query_one("#chat-log", RichLog)
-        log.write(f"[red bold]Connection error:[/red bold] {message.error}")
-        # Re-enable input so user can retry or quit
-        self._set_receiving(False)
-
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
-        if not text or self._receiving:
+            console.print(f"[red bold]Connection error:[/red bold] {e}")
             return
 
-        event.input.value = ""
+        console.print(f"[dim]Session started: {self._harness.agent_id}[/dim]\n")
 
-        # Handle slash commands
-        if text == "/exit":
-            await self.action_quit()
-            return
+        try:
+            await self._input_loop()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        finally:
+            console.print(f"\n[dim]Disconnecting...[/dim]")
+            await self._harness.stop()
 
-        log = self.query_one("#chat-log", RichLog)
-        log.write(f"\n[bold cyan]You:[/bold cyan] {text}")
-        log.scroll_end(animate=False)
+    async def _input_loop(self) -> None:
+        """Read user input and send to the agent."""
+        while True:
+            try:
+                with patch_stdout():
+                    text = await self._prompt_session.prompt_async(
+                        "\n> ",
+                    )
+            except (KeyboardInterrupt, EOFError):
+                return
 
-        self._set_receiving(True)
-        self._send_and_receive(text)
+            text = text.strip()
+            if not text:
+                continue
 
-    @work(thread=False)
+            if text == "/exit":
+                return
+
+            console.print(f"\n[bold cyan]You:[/bold cyan] {escape(text)}")
+
+            await self._send_and_receive(text)
+
     async def _send_and_receive(self, text: str) -> None:
+        """Send a message and render the full response."""
+        self._stream_buffer = ""
+        self._thinking_buffer = ""
+
         try:
             await self._harness.send(text)
-            self._stream_buffer = ""
-            self._thinking_buffer = ""
 
             async for msg in self._harness.receive():
                 self._handle_sdk_message(msg)
 
+            # Flush any remaining buffers
+            self._commit_stream()
+            self._commit_thinking()
+
+        except KeyboardInterrupt:
+            self._commit_stream()
+            self._commit_thinking()
+            console.print("\n[dim italic]--- interrupted ---[/dim italic]")
+            try:
+                await self._harness.interrupt()
+            except Exception:
+                pass
         except Exception as e:
-            self.post_message(HarnessError(str(e)))
-        finally:
-            self._set_receiving(False)
+            console.print(f"\n[red bold]Error:[/red bold] {e}")
 
     def _handle_sdk_message(self, msg: object) -> None:
-        """Route an incoming SDK message to the appropriate TUI handler."""
+        """Route an incoming SDK message to the appropriate handler."""
         if isinstance(msg, StreamEvent):
             event = msg.event
             if event.get("type") == "content_block_delta":
@@ -271,202 +245,111 @@ class AlephApp(App):
                 if delta_type == "text_delta":
                     text = delta.get("text", "")
                     if text:
-                        self.post_message(StreamText(text))
+                        self._on_stream_text(text)
                 elif delta_type == "thinking_delta":
                     thinking = delta.get("thinking", "")
                     if thinking:
-                        self.post_message(StreamThinking(thinking))
+                        self._on_stream_thinking(thinking)
 
         elif isinstance(msg, AssistantMessage):
-            # Text and thinking content already handled via stream events.
-            # Extract tool use blocks.
             for block in msg.content:
                 if isinstance(block, ToolUseBlock):
                     self._last_tool_name = block.name
-                    self.post_message(ToolCallStart(block.name, block.input, block.id))
+                    self._on_tool_call_start(block.name, block.input)
 
         elif isinstance(msg, UserMessage):
-            # Tool results arrive as UserMessage content
             content = msg.content
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, ToolResultBlock):
-                        self.post_message(
-                            ToolCallResult(block.content, block.is_error, self._last_tool_name)
+                        self._on_tool_call_result(
+                            self._last_tool_name, block.content, block.is_error
                         )
 
         elif isinstance(msg, ResultMessage):
-            self.post_message(
-                TurnComplete(
-                    num_turns=msg.num_turns,
-                    duration_ms=msg.duration_ms,
-                    usage=msg.usage,
-                )
-            )
+            self._on_turn_complete(msg)
 
         elif isinstance(msg, SystemMessage):
             if msg.subtype not in ("init",):
-                log = self.query_one("#chat-log", RichLog)
-                log.write(f"[dim italic]System: {msg.subtype}[/dim italic]")
+                console.print(f"[dim italic]System: {msg.subtype}[/dim italic]")
 
-    # ---- Message handlers ----
+    # ---- Rendering ----
 
-    def on_stream_text(self, message: StreamText) -> None:
-        """Append streamed text to the live streaming display."""
-        was_empty = self._stream_buffer == ""
-        self._stream_buffer += message.text
-
-        streaming = self.query_one("#streaming-text", Static)
-
-        if was_empty:
-            # Flush any pending thinking first
+    def _on_stream_text(self, text: str) -> None:
+        """Handle a chunk of streamed text."""
+        if not self._stream_buffer:
+            # First text chunk — flush thinking and print assistant label
             self._commit_thinking()
-            # Show the streaming widget and add the assistant label to the log
-            log = self.query_one("#chat-log", RichLog)
-            log.write("")  # spacing
-            log.write("[bold green]Assistant:[/bold green]")
-            log.scroll_end(animate=False)
-            streaming.add_class("visible")
+            console.print("\n[bold green]Assistant:[/bold green]")
 
-        # Update the streaming display with the full buffer
-        streaming.update(self._stream_buffer)
+        self._stream_buffer += text
+        # Print the chunk inline (no newline) for real-time streaming
+        sys.stdout.write(text)
+        sys.stdout.flush()
 
-    def on_stream_thinking(self, message: StreamThinking) -> None:
-        """Append streamed thinking text to the thinking buffer."""
-        was_empty = self._thinking_buffer == ""
-        self._thinking_buffer += message.text
+    def _on_stream_thinking(self, text: str) -> None:
+        """Handle a chunk of streamed thinking text."""
+        if not self._thinking_buffer:
+            console.print("\n[dim italic]Thinking...[/dim italic]")
 
-        if was_empty:
-            log = self.query_one("#chat-log", RichLog)
-            log.write("")  # spacing
-            log.write("[dim italic]Thinking...[/dim italic]")
-            log.scroll_end(animate=False)
+        self._thinking_buffer += text
 
-    def on_tool_call_start(self, message: ToolCallStart) -> None:
-        """Show a tool call with its input details."""
+    def _on_tool_call_start(self, name: str, input: dict) -> None:
+        """Render a tool call with its input details."""
         self._commit_stream()
         self._commit_thinking()
-        log = self.query_one("#chat-log", RichLog)
 
-        # Tool name header
-        log.write(f"  [bold yellow]\u2192 {message.name}[/bold yellow]")
-
-        # Formatted input details
-        details = _format_tool_input(message.name, message.input)
+        console.print(f"\n  [bold yellow]\u2192 {name}[/bold yellow]")
+        details = _format_tool_input(name, input)
         if details:
             for line in details.split("\n"):
-                log.write(f"    [dim]{line}[/dim]")
+                console.print(f"    [dim]{escape(line)}[/dim]")
 
-        log.scroll_end(animate=False)
-
-    def on_tool_call_result(self, message: ToolCallResult) -> None:
-        """Show a tool result with truncated output."""
-        log = self.query_one("#chat-log", RichLog)
-
-        formatted = _format_tool_result(message.tool_name, message.content, message.is_error)
+    def _on_tool_call_result(
+        self, name: str, content: str | list | None, is_error: bool | None
+    ) -> None:
+        """Render a tool result."""
+        formatted = _format_tool_result(name, content, is_error)
         for line in formatted.split("\n"):
-            log.write(f"    {line}")
+            if is_error:
+                console.print(f"    [red]{escape(line)}[/red]")
+            else:
+                console.print(f"    [dim]{escape(line)}[/dim]")
 
-        log.scroll_end(animate=False)
-
-    def on_turn_complete(self, message: TurnComplete) -> None:
-        """Show turn stats and re-enable input."""
+    def _on_turn_complete(self, msg: ResultMessage) -> None:
+        """Render turn completion stats."""
         self._commit_stream()
         self._commit_thinking()
-        log = self.query_one("#chat-log", RichLog)
 
-        # Extract token counts from usage dict
-        usage = message.usage or {}
+        usage = msg.usage or {}
         input_tok = usage.get("input_tokens", 0)
         output_tok = usage.get("output_tokens", 0)
         self._total_input_tokens += input_tok
         self._total_output_tokens += output_tok
 
-        parts = [f"{message.num_turns} turns", f"{message.duration_ms}ms"]
+        parts = [f"{msg.num_turns} turns", f"{msg.duration_ms}ms"]
         if input_tok or output_tok:
             parts.append(f"{_fmt_tokens(input_tok)} in / {_fmt_tokens(output_tok)} out")
-        summary = "  |  ".join(parts)
-        log.write(f"[dim]--- {summary} ---[/dim]")
-        log.scroll_end(animate=False)
-
-        # Refresh status bar with updated token totals
-        self._update_status("Ready")
-
-    # ---- Internal helpers ----
-
-    def _commit_stream(self) -> None:
-        """Move accumulated stream text into the permanent chat log."""
-        if self._stream_buffer:
-            log = self.query_one("#chat-log", RichLog)
-            # Write the final text as permanent log entries
-            for line in self._stream_buffer.split("\n"):
-                log.write(line)
-            log.scroll_end(animate=False)
-
-        # Hide and clear the streaming widget
-        streaming = self.query_one("#streaming-text", Static)
-        streaming.remove_class("visible")
-        streaming.update("")
-        self._stream_buffer = ""
-
-    def _commit_thinking(self) -> None:
-        """Move accumulated thinking text into the permanent chat log (dimmed)."""
-        if self._thinking_buffer:
-            log = self.query_one("#chat-log", RichLog)
-            for line in self._thinking_buffer.split("\n"):
-                log.write(f"[dim italic]{line}[/dim italic]")
-            log.scroll_end(animate=False)
-        self._thinking_buffer = ""
-
-    def _set_receiving(self, receiving: bool) -> None:
-        """Toggle receiving state and update UI."""
-        self._receiving = receiving
-        input_box = self.query_one("#input-box", Input)
-
-        if receiving:
-            input_box.disabled = True
-            self._update_status("Thinking...")
-        else:
-            input_box.disabled = False
-            input_box.focus()
-            self._update_status("Ready")
-
-    def _update_status(self, state: str) -> None:
-        """Update the status bar with state + session token usage."""
-        status = self.query_one("#status-bar", Static)
-        parts = [state, self._harness.agent_id]
         total = self._total_input_tokens + self._total_output_tokens
         if total:
-            parts.append(f"{_fmt_tokens(total)} tokens")
-        status.update("  |  ".join(parts))
+            parts.append(f"total: {_fmt_tokens(total)}")
+        summary = "  |  ".join(parts)
+        console.print(f"\n[dim]--- {summary} ---[/dim]")
 
-    async def action_interrupt(self) -> None:
-        """Interrupt the agent's current turn (Escape key)."""
-        # Always re-focus input — Escape blurs it in Textual
-        self.query_one("#input-box", Input).focus()
-        if not self._receiving:
-            return
-        # Send interrupt signal — the SDK will finish the turn and yield
-        # a ResultMessage, so the worker exits naturally via receive().
-        try:
-            await self._harness.interrupt()
-        except Exception:
-            pass
-        # Show immediate visual feedback
-        self._commit_stream()
-        self._commit_thinking()
-        log = self.query_one("#chat-log", RichLog)
-        log.write("[dim italic]--- interrupted ---[/dim italic]")
-        log.scroll_end(animate=False)
+    # ---- Helpers ----
 
-    async def action_quit(self) -> None:
-        if self._receiving:
-            try:
-                await self._harness.interrupt()
-            except Exception:
-                pass
-        try:
-            await self._harness.stop()
-        except Exception:
-            pass
-        self.exit()
+    def _commit_stream(self) -> None:
+        """Finalize the streaming text buffer."""
+        if self._stream_buffer:
+            # The text was already printed char-by-char via sys.stdout.write.
+            # Just add a newline to close it out.
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            self._stream_buffer = ""
+
+    def _commit_thinking(self) -> None:
+        """Flush the thinking buffer as dimmed text."""
+        if self._thinking_buffer:
+            for line in self._thinking_buffer.split("\n"):
+                console.print(f"[dim italic]{escape(line)}[/dim italic]")
+            self._thinking_buffer = ""
