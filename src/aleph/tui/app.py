@@ -26,7 +26,6 @@ from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.layout.processors import BeforeInput
-from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 
@@ -500,19 +499,18 @@ class AlephApp:
         _tprint("<dim>Session started: {}</dim>\n", self._harness.agent_id)
 
         try:
-            with patch_stdout():
-                # Auto-send initial prompt if provided (e.g. subagent launch)
-                initial_prompt = self._harness.config.prompt
-                if initial_prompt:
-                    _tprint("<user>Prompt:</user> {}", initial_prompt)
+            # Auto-send initial prompt if provided (e.g. subagent launch)
+            initial_prompt = self._harness.config.prompt
+            if initial_prompt:
+                _tprint("<user>Prompt:</user> {}", initial_prompt)
 
-                    async def send_initial():
-                        await asyncio.sleep(0)  # yield once to let Application start
-                        await self._send_and_receive(initial_prompt)
+                async def send_initial():
+                    await asyncio.sleep(0)  # yield once to let Application start
+                    await self._send_and_receive(initial_prompt)
 
-                    asyncio.ensure_future(send_initial())
+                asyncio.ensure_future(send_initial())
 
-                await self._app.run_async()
+            await self._app.run_async()
         except (KeyboardInterrupt, EOFError):
             pass
         finally:
@@ -615,22 +613,23 @@ class AlephApp:
         self._commit_stream()
         self._commit_thinking()
 
-        _tprint("\n  <tool>\u2192 {}</tool>", name)
         details = _format_tool_input(name, input)
         if details:
-            for line in details.split("\n"):
-                _tprint("    <dim>{}</dim>", line)
+            indented = "\n".join(f"    {line}" for line in details.split("\n"))
+            _tprint("\n  <tool>\u2192 {}</tool>\n<dim>{}</dim>", name, indented)
+        else:
+            _tprint("\n  <tool>\u2192 {}</tool>", name)
 
     def _on_tool_call_result(
         self, name: str, content: str | list | None, is_error: bool | None
     ) -> None:
         """Render a tool result."""
         formatted = _format_tool_result(name, content, is_error)
-        for line in formatted.split("\n"):
-            if is_error:
-                _tprint("    <err>{}</err>", line)
-            else:
-                _tprint("    <dim>{}</dim>", line)
+        indented = "\n".join(f"    {line}" for line in formatted.split("\n"))
+        if is_error:
+            _tprint("<err>{}</err>", indented)
+        else:
+            _tprint("<dim>{}</dim>", indented)
 
     def _on_turn_complete(self, msg: ResultMessage) -> None:
         """Render turn completion stats."""
@@ -665,6 +664,5 @@ class AlephApp:
     def _commit_thinking(self) -> None:
         """Flush the thinking buffer as dimmed text."""
         if self._thinking_buffer:
-            for line in self._thinking_buffer.split("\n"):
-                _tprint("<dim-i>{}</dim-i>", line)
+            _tprint("<dim-i>{}</dim-i>", self._thinking_buffer)
             self._thinking_buffer = ""
