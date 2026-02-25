@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
-from rich.live import Live
 from rich.markup import escape
-from rich.text import Text
+from rich.panel import Panel
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -205,8 +205,15 @@ class AlephApp:
             if text == "/exit":
                 return
 
-            console.print(f"\n[bold cyan]You:[/bold cyan] {escape(text)}")
-
+            # Erase the raw prompt echo and replace with styled version.
+            # Account for line wrapping: count how many terminal lines were used.
+            cols = os.get_terminal_size().columns
+            prompt_display = f"> {text}"
+            # Lines from text wrapping + 1 for the blank line from \n prefix
+            wrapped_lines = (len(prompt_display) + cols - 1) // cols
+            erase_lines = wrapped_lines + 1  # +1 for the \n before >
+            sys.stdout.write(f"\x1b[{erase_lines}A\x1b[J")
+            console.print(f"[bold cyan]You:[/bold cyan] {escape(text)}")
             await self._send_and_receive(text)
 
     async def _send_and_receive(self, text: str) -> None:
