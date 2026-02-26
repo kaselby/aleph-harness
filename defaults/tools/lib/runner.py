@@ -14,18 +14,14 @@ from pathlib import Path
 # Ensure the tools directory is importable
 sys.path.insert(0, str(Path.home() / ".aleph" / "tools"))
 
-# Load env vars from ~/.aleph/.env if it exists
-_env_file = Path.home() / ".aleph" / ".env"
-if _env_file.exists():
-    with open(_env_file) as _f:
-        for _line in _f:
-            _line = _line.strip()
-            if _line and not _line.startswith("#") and "=" in _line:
-                _key, _, _val = _line.partition("=")
-                _key = _key.strip()
-                _val = _val.strip().strip("'\"")
-                if _key and _key not in os.environ:
-                    os.environ[_key] = _val
+# Load credentials from ~/.aleph/credentials/ (one file per key, filename = env var name)
+_creds_dir = Path.home() / ".aleph" / "credentials"
+if _creds_dir.is_dir():
+    for _f in _creds_dir.iterdir():
+        if _f.is_file() and not _f.name.startswith("."):
+            _key = _f.name
+            if _key not in os.environ:
+                os.environ[_key] = _f.read_text().strip()
 
 from lib import budget, registry
 
