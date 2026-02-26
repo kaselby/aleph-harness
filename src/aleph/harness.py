@@ -5,6 +5,7 @@ import os
 # Allow launching from inside a Claude Code session (or another Aleph instance)
 os.environ.pop("CLAUDECODE", None)
 import platform
+import shutil
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -89,6 +90,7 @@ from .hooks import (
     create_read_tracking_hook,
     create_reminder_hook,
     create_skill_context_hook,
+    create_usage_log_hook,
 )
 from .tools import create_aleph_mcp_server
 
@@ -198,11 +200,14 @@ class AlephHarness:
         read_tracker = create_read_tracking_hook(inbox)
         reminder = create_reminder_hook(interval=25)
         skill_context = create_skill_context_hook(self.config.skills_path)
+        usage_log = create_usage_log_hook(
+            self.config.home / "logs", self.agent_id, self.config.tools_path / "bin"
+        )
 
         hooks = {
             "PostToolUse": [
-                # Inbox check and periodic reminders on every tool call
-                HookMatcher(matcher=None, hooks=[inbox_check, reminder]),
+                # Inbox check, reminders, and usage logging on every tool call
+                HookMatcher(matcher=None, hooks=[inbox_check, reminder, usage_log]),
                 # Read tracking only fires when the agent uses Read
                 HookMatcher(matcher="Read", hooks=[read_tracker]),
                 # Skill activation: replace MCP tool output with system context
@@ -407,6 +412,32 @@ class AlephHarness:
             except Exception:
                 return None
         return None
+
+    def archive_conversation(self) -> str | None:
+        """Copy the conversation JSONL from .claude/projects/ to ~/.aleph/logs/.
+
+        Uses the session_id (captured from ResultMessage) and the cwd to locate
+        the CLI's conversation log. Returns the destination path on success,
+        None if the source can't be found.
+        """
+        if not self.session_id:
+            return None
+
+        cwd = self.config.project or os.getcwd()
+        cwd = str(Path(cwd).resolve())
+        project_dir_name = cwd.replace("/", "-").replace(".", "-")
+        source = Path.home() / ".claude" / "projects" / project_dir_name / f"{self.session_id}.jsonl"
+
+        if not source.exists():
+            return None
+
+        dest_dir = self.config.home / "logs" / "conversations"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        today = date.today().strftime("%Y-%m-%d")
+        dest = dest_dir / f"{today}-{self.agent_id}.jsonl"
+        shutil.copy2(source, dest)
+        return str(dest)
 
     async def stop(self):
         """Disconnect the agent session."""

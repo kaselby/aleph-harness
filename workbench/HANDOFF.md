@@ -1,62 +1,71 @@
-# Handoff — TUI Development (2026-02-25)
+# Handoff — Permission System & VSCode Extension Planning (2026-02-26)
 
-## Current State
+## What Was Done This Session
 
-**Branch: `main`** — all TUI work merged.
+### 1. VSCode Extension Feasibility Assessment
+Researched and assessed building a VSCode extension for Aleph. Key findings:
+- **Fully feasible**, no blockers for personal use
+- No marketplace publishing needed — sideload via `.vsix` or symlink
+- Claude Code's terminal mode embeds xterm.js in a webview sidebar, spawning the CLI as a subprocess
+- Diffs and permissions are **CLI features, not extension features** — CC renders them in the terminal, not through VSCode APIs
+- This means the extension is trivially thin: just xterm.js + `aleph` subprocess
+- The real work is building diffs/permissions into Aleph's TUI (which we started)
+- Detailed research notes saved to Obsidian at `claude/Research/VSCode Extensions/`
 
-The TUI is functional. It uses prompt_toolkit `Application(full_screen=False)` for
-persistent keybinding handling (Escape to interrupt, Ctrl+C to quit, Enter to submit).
-All styled output uses `print_formatted_text(HTML(...))` with a markdown-it-py renderer.
-Rich was dropped entirely due to ESC byte corruption through `patch_stdout`.
+### 2. Permission System — Implemented and Merged to Main
+Built a three-mode permission system with inline diffs:
 
-**Live streaming was removed.** Responses accumulate silently and print in full at
-commit time (like Claude Code). This was a deliberate decision after three rounds
-of optimization failed to fix choppy rendering — the root cause was prompt_toolkit's
-layout rendering overhead (per-token `invalidate()` triggering full layout passes on
-the HSplit containing the streaming Window). See `~/.aleph/scratch/tui-streaming-fix-handoff.md`
-for the full profiling story.
+| Mode | Edit/Write | Bash | Read/Web |
+|------|-----------|------|----------|
+| **Safe** (red) | Ask | Ask | Allow |
+| **Default** (yellow) | Ask | Allow | Allow |
+| **Yolo** (green) | Allow | Allow | Allow |
 
-## Known Issue
+**Files created/modified:**
+- `src/aleph/permissions.py` (NEW) — PermissionMode enum, needs_permission(), generate_diff() via difflib, PermissionRequest dataclass with asyncio.Event, create_permission_hook() factory
+- `src/aleph/harness.py` — set_permission_hook() method, PreToolUse hook registration
+- `src/aleph/tui/app.py` — Tab cycles modes, y/n keybindings for accept/reject, colored toolbar mode indicator, diff rendering, permission prompt
 
-**The `> ` input prompt occasionally disappears and doesn't come back.** This is a
-race condition between `print_formatted_text` and the Application's layout renderer.
-`patch_stdout` is the coordination mechanism (wraps `run_in_terminal` to erase layout,
-print, redraw), but it's not 100% reliable. Output calls have been batched to reduce
-the frequency of `run_in_terminal` cycles. The issue is intermittent and may need
-deeper investigation into prompt_toolkit internals.
+**How it works:** PreToolUse hook fires before each tool call. The hook checks the current mode and tool classification. If permission needed, it generates a diff, renders it in the TUI, and awaits an asyncio.Event. The y/n keybindings resolve the Event. The hook returns `permissionDecision: "allow"` or `"deny"` to the SDK. This works because the SDK dispatches hooks via `await callback()` inside anyio tasks (query.py:293), so prompt_toolkit's event loop keeps processing keystrokes while the hook blocks.
 
-## Architecture
+**Status:** Functional and merged to main. User tested it and confirmed the core functionality works.
 
-- `src/aleph/tui/app.py` — the entire TUI in one file
-- `src/aleph/tui/__init__.py` — exports `AlephApp`
-- Layout: just input line + toolbar (2 lines at bottom of terminal)
-- Output: `_tprint()` helper wraps `print_formatted_text(HTML(...))` with auto-escaping
-- Markdown: `_markdown_to_ft()` converts markdown to FormattedText via markdown-it-py
-- Message routing: `_handle_sdk_message()` dispatches StreamEvent, AssistantMessage, etc.
-- Token accumulation: `_stream_chunks` list, joined and markdown-rendered at commit time
+## What Needs Doing Next
 
-## What the TUI Renders
+### Immediate: Permission prompt should be ephemeral (in-progress)
+The "Allow Edit? [y] accept [n] reject" text currently prints to scrollback and persists after answering. It should disappear after the user responds.
 
-- **Response text** — markdown-rendered (bold, italic, code, headings, lists, tables, code blocks)
-- **Thinking blocks** — "Thinking..." label prints immediately, full content prints before response
-- **Tool calls** — name + smart-formatted input (Bash→command, Read→path, etc.)
-- **Tool results** — summary + truncated output (~10 lines), errors in red
-- **Turn stats** — turns, duration, token counts
-- **Toolbar** — Ready/Working, agent ID, context usage (Xk/200k), "Esc to interrupt"
+**Approach:** Use `ConditionalContainer` in the prompt_toolkit layout to make the permission prompt a dynamic layout element (like the toolbar) instead of scrollback text. The diff stays in scrollback (that's fine), but the action prompt appears/disappears with the permission state.
 
-## Recent Changes (this session)
+Specifically:
+- Import `ConditionalContainer` from `prompt_toolkit.layout.containers`
+- Add a `_permission_bar` method (like `_toolbar`) that returns the prompt HTML
+- Add a `ConditionalContainer` to the HSplit in `__init__`, filtered by `_pending_permission is not None`
+- Remove the `_tprint` call for the prompt from `_render_permission_prompt`
+- The accepted/rejected feedback can still print to scrollback (green checkmark / red X)
 
-- Removed live streaming and all associated machinery (streaming Window, GC disable,
-  render throttle, list-based buffers, tail display)
-- Added context usage display in toolbar (latest turn's input+output tokens / 200k)
-- Thinking blocks commit as soon as text starts (not at response end)
-- Model verification via `check_model()` on first AssistantMessage
-- Renamed "Assistant:" label to "Aleph:"
-- Restored `patch_stdout` import (was accidentally dropped)
-- Added TextBlock fallback in AssistantMessage handler
+**Work is in the `worktree-permissions` worktree** at `/Users/kaselby/Git/aleph/.claude/worktrees/permissions`. The worktree has some additional changes on top of main (cli.py, config.py additions for ephemeral mode). The main branch also has changes from a parallel Aleph session (usage logging hook, conversation archival, ephemeral mode, improved interrupt handling) — the worktree is behind main on those.
 
-## Task Board
+### Later: VSCode Extension
+Once the TUI permission UX is polished, building the extension is straightforward:
+1. Scaffold with `yo code`
+2. Register a sidebar webview with xterm.js
+3. Spawn `aleph` process, connect stdin/stdout to xterm.js pty
+4. That's it — diffs, permissions, markdown all render in the terminal
 
-See `workbench/todo.yaml` — tasks 14-15, 21-23 done this session. Open items
-include conversation resume/fork/rewind, multi-agent wiring, and the `>` prompt
-disappearing issue.
+The extension needs no structured IPC, no diff editor integration, no permission UI — it's all in the TUI.
+
+## Key Technical Details
+
+- `permission_mode="bypassPermissions"` stays on ClaudeAgentOptions — our PreToolUse hook handles permissions independently
+- PreToolUse hooks fire regardless of SDK permission_mode setting
+- asyncio.Event works across the anyio/asyncio boundary because anyio runs on the asyncio backend
+- The `_on_tool_call_start` method suppresses abbreviated display when `needs_permission()` returns True, since the hook will render the full diff
+- Tab cycling works during both idle and receiving states (but not during permission prompts)
+- Escape auto-denies pending permissions before interrupting
+
+## Files to Read
+- `src/aleph/permissions.py` — all permission logic
+- `src/aleph/tui/app.py` — TUI integration (search for "Permission" section)
+- `/Users/kaselby/.claude/plans/twinkly-squishing-crystal.md` — original implementation plan
+- `claude/Research/VSCode Extensions/` (Obsidian) — extension feasibility research

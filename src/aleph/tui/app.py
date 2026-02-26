@@ -618,6 +618,8 @@ class AlephApp:
         except (KeyboardInterrupt, EOFError):
             pass
         finally:
+            # Bypass permissions for unattended exit tasks (summary, archival)
+            self._perm_mode = PermissionMode.YOLO
             if not self._harness.config.ephemeral:
                 _tprint("\n<dim>Saving session summary...</dim>")
                 try:
@@ -626,6 +628,11 @@ class AlephApp:
                         pass
                 except Exception:
                     pass
+                # Archive conversation log
+                archive_path = self._harness.archive_conversation()
+                if archive_path:
+                    _tprint("<dim>Archived conversation to {}</dim>", archive_path)
+
                 # Auto-commit memory changes to git
                 commit_result = self._harness.commit_memory()
                 if commit_result:
@@ -751,6 +758,9 @@ class AlephApp:
                         )
 
         elif isinstance(msg, ResultMessage):
+            # Capture session ID for conversation log archival
+            if msg.session_id:
+                self._harness.session_id = msg.session_id
             self._on_turn_complete(msg)
 
         elif isinstance(msg, SystemMessage):

@@ -1,5 +1,6 @@
-"""Hook callbacks for message delivery, read tracking, and periodic reminders."""
+"""Hook callbacks for message delivery, read tracking, periodic reminders, and usage logging."""
 
+import json
 import os
 import subprocess
 from datetime import date, datetime
@@ -257,6 +258,66 @@ def _build_session_recap(sessions_path: Path) -> str:
         return ""
     except Exception:
         return ""
+
+
+def create_usage_log_hook(logs_path: Path, agent_id: str, tools_bin: Path | None = None):
+    """Create a PostToolUse hook that logs custom tool and skill usage to a JSONL file.
+
+    Logs two categories:
+    - Custom tools: Bash calls to tools/bin/* (e.g. exa, tavily)
+    - Skill activations: mcp__aleph__activate_skill calls
+    Built-in tools (Read, Write, Bash, etc.) are skipped.
+    """
+    log_file = logs_path / "tool-usage.jsonl"
+    bin_prefix = str(tools_bin) + "/" if tools_bin else None
+
+    def _append(entry: dict) -> None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    async def usage_log_hook(
+        input_data: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        tool_name = input_data.get("tool_name", "")
+        tool_input = input_data.get("tool_input", {})
+        tool_output = input_data.get("tool_output", {})
+        is_error = False
+        if isinstance(tool_output, dict):
+            is_error = bool(tool_output.get("is_error"))
+
+        # Skill activations
+        if tool_name == "mcp__aleph__activate_skill":
+            skill = tool_input.get("name", "unknown")
+            _append({
+                "ts": datetime.now().isoformat(),
+                "agent": agent_id,
+                "type": "skill",
+                "name": skill,
+            })
+            return {}
+
+        # Custom tools (Bash calls to tools/bin/)
+        if tool_name == "Bash" and bin_prefix:
+            command = tool_input.get("command", "")
+            if bin_prefix in command:
+                try:
+                    idx = command.index(bin_prefix)
+                    rest = command[idx + len(bin_prefix):]
+                    custom_tool = rest.split()[0] if rest else "unknown"
+                except (ValueError, IndexError):
+                    custom_tool = "unknown"
+                _append({
+                    "ts": datetime.now().isoformat(),
+                    "agent": agent_id,
+                    "type": "tool",
+                    "name": custom_tool,
+                    "error": is_error,
+                })
+
+        return {}
+
+    return usage_log_hook
 
 
 def _extract_summary(msg_file: Path) -> str | None:

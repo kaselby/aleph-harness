@@ -90,6 +90,11 @@ Also deferred: **per-agent git worktrees** — each running agent gets its own w
 - PreCompact hook for persisting critical context before compaction
 - Unify Aleph messaging with comm-channel (`~/Git/claude-tools/comm-channel`). Currently two separate systems: Aleph uses `~/.aleph/inbox/` with markdown frontmatter, comm-channel uses `~/.claude-comm/` with JSON. Comm-channel has nicer primitives (atomic writes, PID-based liveness, GC, name resolution). Long-term, one messaging layer for both Aleph agents and Claude sessions.
 
+### Exit-step permission granularity
+Currently we force YOLO mode for the entire exit sequence (summary, archival, git commit). This is fine for now since the exit step only writes to `~/.aleph/`, but it's a blunt instrument. If we later add exit-step behaviors that touch project files or run Bash commands, we'll want finer-grained control — e.g. allow writes only to `~/.aleph/memory/` and `~/.aleph/logs/`, or a dedicated "exit" permission mode that's more permissive than default but less than YOLO.
+
+**Revisit when:** Exit steps expand beyond memory/summary writes, or if we add project-level cleanup to the exit sequence.
+
 ### Session summary robustness
 The exit summary fires as a final turn after the user quits, but if the session is already at or near the context limit, the summary turn itself may fail (context overflow, truncated output, or the SDK refusing to accept another message). The `except Exception: pass` in the TUI finally block means this fails silently — no summary gets written and there's no indication it was lost. Options: detect remaining context headroom before attempting the summary and skip/warn if too low; write a partial summary from harness-side metadata (agent ID, timestamp, duration) even if the model turn fails; trigger the summary earlier (e.g. via reminder hook when context crosses a threshold). May also just be an acceptable loss — sessions near context limit have presumably already been persisting state incrementally.
 
