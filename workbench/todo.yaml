@@ -158,6 +158,7 @@ tasks:
     notes: >
       Wire up the subagent spawning, message passing, and coordination
       infrastructure for multi-agent workflows.
+      Design doc: workbench/design-subagents.md
 
   - id: 21
     description: Knowledge cutoff fix — add check_model call in TUI

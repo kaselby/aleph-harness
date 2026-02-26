@@ -46,6 +46,7 @@ def create_aleph_mcp_server(inbox_root: Path, skills_path: Path):
         "as a notification after their next tool call.",
         {
             "to": str,
+            "from": str,
             "summary": str,
             "body": str,
             "priority": str,
@@ -56,6 +57,7 @@ def create_aleph_mcp_server(inbox_root: Path, skills_path: Path):
         summary = args["summary"]
         body = args["body"]
         priority = args.get("priority", "normal")
+        sender = args.get("from", "unknown")
 
         recipient_inbox = inbox_root / recipient
         recipient_inbox.mkdir(parents=True, exist_ok=True)
@@ -66,6 +68,7 @@ def create_aleph_mcp_server(inbox_root: Path, skills_path: Path):
 
         content = (
             f"---\n"
+            f"from: {sender}\n"
             f"summary: \"{summary}\"\n"
             f"priority: {priority}\n"
             f"timestamp: {datetime.now(timezone.utc).isoformat()}\n"

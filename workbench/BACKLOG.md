@@ -62,11 +62,6 @@ Several pieces from Claude Code's system prompt were identified as belonging in 
 
 **Revisit when:** After observing Aleph's coding behavior in practice — add what's missing, skip what's not needed.
 
-### Skill activation — deny message UX
-The PreToolUse hook denies the Read and injects content as system context. The model sees a "denied" tool result. The system prompt explains this is expected, but it's somewhat hacky. May want a cleaner mechanism if the SDK adds native skill support or if we find a way to allow the Read but suppress duplicate content.
-
-**Revisit when:** If the model gets confused by the denied Read, or if the SDK adds better primitives.
-
 ### `claude config` subcommands not usable from inside a session
 Running `claude config list` or `claude config get model` from within an Aleph session (via Bash tool) doesn't return CLI config output — it returns what looks like a model response, as if the input is being interpreted as a prompt rather than dispatched to the config subcommand. Setting `CLAUDECODE=` (empty) doesn't help. This matters because it would let us auto-discover the default model (and other settings) without hardcoding. The `CLAUDECODE` env var nesting check might not be the only guard, or the `config` subcommand may have its own issues when invoked in this context.
 
@@ -74,14 +69,46 @@ Running `claude config list` or `claude config get model` from within an Aleph s
 
 ## Future Ideas
 
-- Persistent daemon component for the harness
+- ~~Persistent daemon component for the harness~~ → promoted to deferred decision below
 - GitHub integration
 - Rate limiting / cost guardrails for swarm mode
 - Agent failure recovery
 - Zettelkasten-style knowledge store for memory overflow
 - Vector DB / embedding-based retrieval
+- TUI: message timestamps / elapsed time between messages (subtle header or separator showing when each message was sent and how long the gap was)
 - TUI: diff view, syntax highlighting, rewind/fork
 - TUI: live markdown rendering during streaming (study `markdown-it-py` as parser — it's what Textual uses under the hood. Feed token stream into a FormattedText builder. Current approach: plain streaming → markdown-rendered scrollback at commit time.)
 - `/command` shortcuts in TUI for skill activation
 - Stop hook for catching unread messages at turn end
 - PreCompact hook for persisting critical context before compaction
+- Unify Aleph messaging with comm-channel (`~/Git/claude-tools/comm-channel`). Currently two separate systems: Aleph uses `~/.aleph/inbox/` with markdown frontmatter, comm-channel uses `~/.claude-comm/` with JSON. Comm-channel has nicer primitives (atomic writes, PID-based liveness, GC, name resolution). Long-term, one messaging layer for both Aleph agents and Claude sessions.
+
+### Session summary robustness
+The exit summary fires as a final turn after the user quits, but if the session is already at or near the context limit, the summary turn itself may fail (context overflow, truncated output, or the SDK refusing to accept another message). The `except Exception: pass` in the TUI finally block means this fails silently — no summary gets written and there's no indication it was lost. Options: detect remaining context headroom before attempting the summary and skip/warn if too low; write a partial summary from harness-side metadata (agent ID, timestamp, duration) even if the model turn fails; trigger the summary earlier (e.g. via reminder hook when context crosses a threshold). May also just be an acceptable loss — sessions near context limit have presumably already been persisting state incrementally.
+
+**Revisit when:** Observing lost session summaries in practice, or when building the PreCompact hook.
+
+### Skill-aware hooks / session state
+Hooks currently have no awareness of what skills are active. The motivating case: when the programming skill is active and a TODO.yml exists in the project, the reminder hook should nudge the agent to update it. But skills follow a standardized protocol and shouldn't carry hook definitions — that's harness-specific behavior.
+
+Proposed approach: the harness tracks which skills have been activated during the session (it already processes `activate_skill` calls via the PostToolUse hook). Expose this as session state that hooks can query. Hooks then make their own decisions based on what's active — e.g. the reminder hook checks for `programming` in the active set and adjusts its message. Skills stay clean; hooks are skill-aware without skills being hook-aware.
+
+Open questions: how to define "project directory" for TODO.yml detection when the agent isn't bound to a single working directory; whether this state-tracking belongs in the harness, the hook system, or a shared session context object.
+
+**Revisit when:** Building context-aware reminders, or when the hook system needs more sophistication generally.
+
+### Aleph manager daemon
+A persistent process that serves as the central authority for agent lifecycle. Currently there's no way to know which agents are alive — inbox directories persist after sessions end, tmux detection only works for tmux-spawned agents, and there's no cleanup of stale state.
+
+A manager daemon would handle:
+- **Agent registry.** Agents register on startup, deregister on shutdown. The manager is the source of truth for who's running. Solves `list-agents` (task 13.1) cleanly.
+- **Inbox cleanup.** Periodically garbage-collect read messages and inboxes for dead agents. See existing backlog item on message cleanup/archiving.
+- **Health monitoring.** Detect crashed agents (registered but no heartbeat). Notify parent agents or the user.
+- **Cost tracking.** Aggregate token usage across agents for budget enforcement. See existing backlog item on rate limiting.
+- **Process management.** Could subsume the tmux spawn logic — the manager launches agents and tracks their PIDs/tmux windows.
+
+Implementation options: a simple Unix socket server in Python, a lightweight HTTP API, or even just a well-structured PID/lock file system. The socket server is probably the right level — agents connect on startup, the manager tracks them, agents query it for discovery.
+
+This is a significant piece of infrastructure and shouldn't be built until multi-agent workflows are actually running and we've felt the pain of not having it.
+
+**Revisit when:** Multi-agent spawning is working (task 20) and agent discovery / cleanup becomes a real friction point.
