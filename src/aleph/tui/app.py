@@ -509,6 +509,10 @@ class AlephApp:
             if text == "/exit":
                 event.app.exit()
                 return
+            if text == "/fquit":
+                app_ref._harness.config.ephemeral = True
+                event.app.exit()
+                return
 
             # Lock out further submissions immediately (before ensure_future yields)
             app_ref._receiving = True
