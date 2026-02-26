@@ -188,3 +188,13 @@ tasks:
     notes: >
       Enter submits, no way to insert newlines. Need Alt+Enter or similar
       for newline insertion, plus text wrapping for long input lines.
+
+  - id: 25
+    description: Skill activation discipline
+    status: open
+    notes: >
+      Aleph doesn't reliably activate skills before doing relevant work
+      (e.g. didn't load programming skill before editing harness code).
+      Investigate fixes — could be a prompt change (stronger language in
+      ALEPH.md), a hook (auto-activate skills based on tool patterns),
+      or both.

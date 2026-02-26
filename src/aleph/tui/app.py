@@ -677,18 +677,21 @@ class AlephApp:
         self._commit_thinking()
 
         usage = msg.usage or {}
-        input_tok = usage.get("input_tokens", 0)
+        # input_tokens is only uncached tokens; the real context size includes
+        # cache_read and cache_creation tokens as well.
+        input_tok = (
+            usage.get("input_tokens", 0)
+            + usage.get("cache_read_input_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0)
+        )
         output_tok = usage.get("output_tokens", 0)
         self._total_input_tokens += input_tok
         self._total_output_tokens += output_tok
-        self._context_tokens = input_tok + output_tok
+        self._context_tokens = input_tok
 
         parts = [f"{msg.num_turns} turns", f"{msg.duration_ms}ms"]
         if input_tok or output_tok:
             parts.append(f"{_fmt_tokens(input_tok)} in / {_fmt_tokens(output_tok)} out")
-        total = self._total_input_tokens + self._total_output_tokens
-        if total:
-            parts.append(f"total: {_fmt_tokens(total)}")
         summary = "  |  ".join(parts)
         _tprint("\n<dim>--- {} ---</dim>", summary)
 
