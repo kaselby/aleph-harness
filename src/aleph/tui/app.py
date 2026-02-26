@@ -387,6 +387,7 @@ class AlephApp:
         self._tool_name_queue: list[str] = []
         self._total_input_tokens = 0
         self._total_output_tokens = 0
+        self._context_tokens = 0  # latest turn's input+output ≈ current context size
         self._receiving = False
         self._interrupt_in_flight = False
         self._app: Application | None = None
@@ -473,9 +474,8 @@ class AlephApp:
         else:
             status = "Ready"
         parts = [status, self._harness.agent_id]
-        total = self._total_input_tokens + self._total_output_tokens
-        if total:
-            parts.append(f"{_fmt_tokens(total)} tokens")
+        if self._context_tokens:
+            parts.append(f"{_fmt_tokens(self._context_tokens)} / 200k")
 
         if self._receiving:
             parts.append("Esc to interrupt")
@@ -565,6 +565,8 @@ class AlephApp:
                 if delta_type == "text_delta":
                     text = delta.get("text", "")
                     if text:
+                        if not self._stream_chunks:
+                            self._commit_thinking()
                         self._stream_chunks.append(text)
                 elif delta_type == "thinking_delta":
                     thinking = delta.get("thinking", "")
@@ -572,6 +574,11 @@ class AlephApp:
                         self._on_stream_thinking(thinking)
 
         elif isinstance(msg, AssistantMessage):
+            # Verify model on first response
+            warning = self._harness.check_model(msg.model)
+            if warning:
+                _tprint("\n<err-b>Warning:</err-b> <err>{}</err>", warning)
+
             for block in msg.content:
                 if isinstance(block, TextBlock) and block.text:
                     # Fallback: capture text from the final message in case
@@ -641,6 +648,7 @@ class AlephApp:
         output_tok = usage.get("output_tokens", 0)
         self._total_input_tokens += input_tok
         self._total_output_tokens += output_tok
+        self._context_tokens = input_tok + output_tok
 
         parts = [f"{msg.num_turns} turns", f"{msg.duration_ms}ms"]
         if input_tok or output_tok:
@@ -657,7 +665,7 @@ class AlephApp:
         """Render accumulated text as markdown and print to scrollback."""
         if self._stream_chunks:
             full_text = "".join(self._stream_chunks)
-            _tprint("\n<assistant>Assistant:</assistant>")
+            _tprint("\n<assistant>Aleph:</assistant>")
             print_formatted_text(_markdown_to_ft(full_text), style=TUI_STYLE)
             self._stream_chunks = []
 

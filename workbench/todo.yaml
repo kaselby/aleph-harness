@@ -1,6 +1,6 @@
 # Aleph — Task Tracker
 # Status: open | in-progress | done | blocked
-# Updated: 2026-02-24
+# Updated: 2026-02-25
 
 tasks:
   - id: 1
@@ -93,18 +93,91 @@ tasks:
         status: open
 
   - id: 14
-    description: TUI (Python Textual)
-    status: open
+    description: TUI
+    status: done
+    notes: >
+      Iterative development across several sessions. Started with Textual (abandoned),
+      then Rich + PromptSession (worked but no keybindings during responses), then
+      prompt_toolkit Application. Live streaming removed due to irreconcilable
+      performance issues with prompt_toolkit's layout rendering — responses now
+      print in full at commit time (like Claude Code). Keybindings (Escape to
+      interrupt, Ctrl+C to quit) work throughout. Markdown rendering via
+      markdown-it-py.
     subtasks:
       - id: 14.1
         description: Basic chat display (render AssistantMessage, ToolUseBlock, ResultMessage)
-        status: open
+        status: done
       - id: 14.2
-        description: User input
-        status: open
+        description: User input with persistent keybindings
+        status: done
       - id: 14.3
-        description: Streaming text display (StreamEvent handling)
-        status: open
+        description: Markdown rendering at commit time
+        status: done
       - id: 14.4
         description: Multi-agent tabs
         status: open
+        notes: Deferred — tmux handles multi-agent for now.
+
+  - id: 15
+    description: TUI — context usage in status bar
+    status: done
+    notes: >
+      Toolbar shows "Xk / 200k" using the latest turn's input+output tokens
+      as an approximation of current context size. Limit hardcoded to 200k.
+
+  - id: 16
+    description: Conversation resume
+    status: open
+    notes: >
+      Ability to resume a previous conversation. Need to understand how/where
+      the SDK stores conversation state.
+
+  - id: 17
+    description: Conversation forking
+    status: open
+    notes: >
+      Fork a conversation at a given point, creating a new branch of the
+      conversation from that state.
+
+  - id: 18
+    description: Conversation storage investigation
+    status: open
+    notes: >
+      Look at where conversations are stored and whether there's bleedover
+      between Aleph sessions and Claude Code sessions.
+
+  - id: 19
+    description: Conversation rewind
+    status: open
+    notes: >
+      Rewind a conversation to a previous point, discarding later messages.
+
+  - id: 20
+    description: Multi-agent wiring
+    status: open
+    notes: >
+      Wire up the subagent spawning, message passing, and coordination
+      infrastructure for multi-agent workflows.
+
+  - id: 21
+    description: Knowledge cutoff fix — add check_model call in TUI
+    status: done
+    notes: >
+      check_model(msg.model) called on first AssistantMessage. Prints
+      warning if model doesn't match expected. Harness _model_verified
+      flag ensures single check.
+
+  - id: 22
+    description: Show thinking blocks during response
+    status: done
+    notes: >
+      "Thinking..." prints immediately when thinking starts. Full thinking
+      content commits as soon as the first text delta arrives, before the
+      main response prints.
+
+  - id: 23
+    description: Rename "Assistant" label to "Aleph"
+    status: done
+    notes: >
+      The response header currently says "Assistant:" — should say "Aleph:"
+      to match the agent's identity.
