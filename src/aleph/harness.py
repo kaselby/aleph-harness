@@ -6,7 +6,10 @@ import os
 os.environ.pop("CLAUDECODE", None)
 import platform
 import uuid
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
+
+import yaml
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -78,10 +81,10 @@ def _get_knowledge_cutoff(model: str) -> str:
             return cutoff
     return "unknown"
 
-import yaml
 
 from .config import ALLOWED_TOOLS, BASE_TOOLS, AlephConfig
 from .hooks import (
+    _build_session_recap,
     create_inbox_check_hook,
     create_read_tracking_hook,
     create_reminder_hook,
@@ -146,6 +149,34 @@ class AlephHarness:
             ctx += "\n\n---\n## Memory Context\n\n"
             ctx += context_file.read_text()
 
+        # Inject handoff and session recap in a clearly demarcated block
+        handoff_file = self.config.memory_path / "handoff.md"
+        sessions_path = self.config.memory_path / "sessions"
+        handoff_content = None
+        recap_content = None
+
+        if handoff_file.exists():
+            handoff_content = handoff_file.read_text()
+            handoff_file.unlink()
+
+        recap_content = _build_session_recap(sessions_path)
+
+        if handoff_content or recap_content:
+            ctx += "\n\n---\n## Session Continuity\n\n"
+            ctx += (
+                "The following is context carried forward from previous sessions. "
+                "Use it to orient yourself — what was recently worked on, what state "
+                "things are in, and anything left unfinished.\n\n"
+            )
+            if handoff_content:
+                ctx += "### Handoff\n\n"
+                ctx += handoff_content
+                ctx += "\n\n"
+            if recap_content:
+                ctx += "### Recent Sessions (today)\n\n"
+                ctx += recap_content
+                ctx += "\n"
+
         full_prompt = system_prompt + ctx
 
         # Set up inbox directory
@@ -155,12 +186,12 @@ class AlephHarness:
         # Build hooks
         inbox_check = create_inbox_check_hook(inbox)
         read_tracker = create_read_tracking_hook(inbox)
-        reminder = create_reminder_hook(interval=50)
+        reminder = create_reminder_hook(interval=25)
         skill_context = create_skill_context_hook(self.config.skills_path)
 
         hooks = {
             "PostToolUse": [
-                # Inbox check fires on every tool call
+                # Inbox check and periodic reminders on every tool call
                 HookMatcher(matcher=None, hooks=[inbox_check, reminder]),
                 # Read tracking only fires when the agent uses Read
                 HookMatcher(matcher="Read", hooks=[read_tracker]),
@@ -259,17 +290,46 @@ class AlephHarness:
     def get_summary_prompt(self) -> str:
         """Return the prompt used to request a session summary."""
         today = date.today().strftime("%Y-%m-%d")
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         summary_path = self.config.memory_path / "sessions" / f"{today}-{self.agent_id}.md"
+        memory_path = self.config.memory_path
 
         return (
-            f"[Session ending] Write a brief session summary to {summary_path}. "
-            f"Use this structure:\n\n"
-            f"## Summary\n(1-2 sentences: what was this session about)\n\n"
+            f"[Session ending] Before writing the session summary, reflect on "
+            f"what you learned this session and update your memory files.\n\n"
+            f"## Step 1: Memory updates\n\n"
+            f"Review the session and update each file as needed:\n\n"
+            f"- **{memory_path}/preferences.md** — Did the user express any "
+            f"preferences about how they like to work, communicate, or make "
+            f"decisions? What about tool preferences, style preferences, or "
+            f"opinions? Add anything new.\n"
+            f"- **{memory_path}/patterns.md** — Did you learn any lessons? "
+            f"Hit any gotchas or anti-patterns? Discover something that worked "
+            f"well? Did the user correct you on something? Add it.\n"
+            f"- **{memory_path}/context.md** — Did you learn any durable "
+            f"knowledge worth persisting? New project facts, key references, "
+            f"important architectural details? This is for things you always "
+            f"want to know, not recent state. Keep it under 50 lines.\n"
+            f"- **Project memory** — If you worked on a project, does its "
+            f"memory.md need updating with anything you learned about the "
+            f"codebase, architecture, or conventions?\n\n"
+            f"Don't skip this step. Even small observations compound over time. "
+            f"If genuinely nothing was learned, that's fine — but think about "
+            f"it first.\n\n"
+            f"## Step 2: Session summary\n\n"
+            f"Write a brief session summary to {summary_path}. "
+            f"Start with YAML frontmatter, then the content:\n\n"
+            f"```\n"
+            f"---\n"
+            f"agent: {self.agent_id}\n"
+            f"timestamp: {now}\n"
+            f"---\n"
+            f"# {today} — <brief title> ({self.agent_id})\n\n"
+            f"## Summary\n(1-2 sentences)\n\n"
             f"## Decisions\n(key decisions made, if any)\n\n"
             f"## Changes\n(what was built, modified, or configured)\n\n"
-            f"## Open threads\n(what's unfinished or needs follow-up)\n\n"
-            f"Also update ~/.aleph/memory/context.md if the current state has "
-            f"changed significantly. Keep it under 50 lines."
+            f"## Open threads\n(what's unfinished or needs follow-up)\n"
+            f"```\n"
         )
 
     async def stop(self):

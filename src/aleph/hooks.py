@@ -1,7 +1,11 @@
 """Hook callbacks for message delivery, read tracking, and periodic reminders."""
 
+import os
+import subprocess
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+
+import yaml
 
 from claude_agent_sdk import (
     HookContext,
@@ -121,37 +125,134 @@ def create_read_tracking_hook(inbox_path: Path):
     return read_tracking_hook
 
 
+
+_MEMORY_PROMPTS = [
+    (
+        "Has the user expressed any preferences this session — how they like to "
+        "work, communicate, or make decisions? Update ~/.aleph/memory/preferences.md "
+        "if so."
+    ),
+    (
+        "Have you learned any lessons or hit any gotchas this session? Has the "
+        "user corrected you on something? Update ~/.aleph/memory/patterns.md "
+        "if so."
+    ),
+    (
+        "Have you learned any durable knowledge worth adding to "
+        "~/.aleph/memory/context.md? New project facts, key references, "
+        "architectural details you'll always want to know?"
+    ),
+    (
+        "Have you discovered anything about the codebase, architecture, or "
+        "conventions worth recording? Update the project's memory.md if so."
+    ),
+]
+
+
 def create_reminder_hook(interval: int = 50):
     """Create a PostToolUse hook that periodically reminds the agent to update memory.
+
+    Rotates through specific, targeted prompts rather than repeating the same
+    generic message — makes the reminders harder to tune out.
 
     Args:
         interval: Number of tool calls between reminders.
     """
     call_count = 0
+    prompt_index = 0
 
     async def reminder_hook(
         input_data: HookInput, tool_use_id: str | None, context: HookContext
     ) -> HookJSONOutput:
-        nonlocal call_count
+        nonlocal call_count, prompt_index
         call_count += 1
 
         if call_count % interval != 0:
             return {}
 
+        prompt = _MEMORY_PROMPTS[prompt_index % len(_MEMORY_PROMPTS)]
+        prompt_index += 1
+
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
-                "additionalContext": (
-                    "[System reminder]: Consider updating memory with any important "
-                    "observations from this session. Update ~/.aleph/memory/context.md "
-                    "(hot tier), ~/.aleph/memory/patterns.md (lessons learned), or "
-                    "~/.aleph/memory/preferences.md as appropriate."
-                ),
+                "additionalContext": f"[Memory check]: {prompt}",
             }
         }
 
     return reminder_hook
 
+
+def _get_session_timestamp(path: Path) -> datetime:
+    """Extract timestamp from session file frontmatter, falling back to file mtime."""
+    try:
+        text = path.read_text()
+        if text.startswith("---"):
+            end = text.index("---", 3)
+            frontmatter = yaml.safe_load(text[3:end])
+            if frontmatter and "timestamp" in frontmatter:
+                ts = frontmatter["timestamp"]
+                if isinstance(ts, datetime):
+                    return ts
+                return datetime.fromisoformat(str(ts))
+    except (ValueError, yaml.YAMLError):
+        pass
+    return datetime.fromtimestamp(path.stat().st_mtime)
+
+
+def _build_session_recap(sessions_path: Path) -> str:
+    """Summarize today's recent sessions using Haiku.
+
+    Reads up to 5 most recent session files from today, calls Haiku to
+    produce a concise recap. Returns empty string on failure or if no
+    sessions exist.
+    """
+    if not sessions_path.exists():
+        return ""
+
+    today_prefix = date.today().strftime("%Y-%m-%d")
+    today_files = sorted(
+        [
+            f
+            for f in sessions_path.iterdir()
+            if f.name.startswith(today_prefix) and f.suffix == ".md"
+        ],
+        key=_get_session_timestamp,
+        reverse=True,
+    )[:5]
+
+    if not today_files:
+        return ""
+
+    content_parts = []
+    for f in today_files:
+        content_parts.append(f"### {f.stem}\n\n{f.read_text()}")
+    combined = "\n\n---\n\n".join(content_parts)
+
+    prompt = (
+        "Below are session summaries from today for a persistent AI assistant called Aleph. "
+        "Produce a concise recap (5-10 lines max) covering: what was worked on, "
+        "key decisions made, current state of things, and anything unfinished. "
+        "Write in second person ('you did X'). Be specific — names, paths, "
+        "details matter more than vague summaries.\n\n"
+        f"{combined}"
+    )
+
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        result = subprocess.run(
+            ["claude", "-p", "--model", "haiku", "--no-session-persistence", "--effort", "low"],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return ""
+    except Exception:
+        return ""
 
 
 def _extract_summary(msg_file: Path) -> str | None:
