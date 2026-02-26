@@ -65,6 +65,13 @@ Running `claude config list` or `claude config get model` from within an Aleph s
 
 **Revisit when:** We need runtime introspection of Claude Code settings, or when debugging CLI integration issues.
 
+### Periodic maintenance / git push
+The `~/.aleph` repo auto-commits locally at session end but doesn't push to the remote (`kaselby-aleph/aleph`). A periodic maintenance step should handle: git push, inbox cleanup (prune stale .read files and dead agent inboxes), and session history compaction. Could be a cron job, a harness startup hook, or part of the future manager daemon.
+
+Also deferred: **per-agent git worktrees** — each running agent gets its own worktree/branch, merges to main at session end. Eliminates index lock contention entirely but requires significant plumbing (redirect `config.home`, handle merge conflicts, maintain inter-agent visibility). Worth revisiting if concurrent write contention becomes a real problem.
+
+**Revisit when:** Multiple agents are regularly causing git lock contention, or when building the manager daemon.
+
 ## Future Ideas
 
 - ~~Persistent daemon component for the harness~~ → promoted to deferred decision below

@@ -214,7 +214,11 @@ class AlephHarness:
 
         # Environment: disable Claude Code's auto-memory + pre-activate canonical venv
         venv_path = self.config.home / "venv"
-        env = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        env = {
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            "ALEPH_HOME": str(self.config.home),
+            "ALEPH_AGENT_ID": self.agent_id,
+        }
         if venv_path.exists():
             venv_bin = venv_path / "bin"
             env["VIRTUAL_ENV"] = str(venv_path)
@@ -331,6 +335,56 @@ class AlephHarness:
             f"## Open threads\n(what's unfinished or needs follow-up)\n"
             f"```\n"
         )
+
+    def commit_memory(self) -> str | None:
+        """Commit any changed memory/tools/skills to git.
+
+        Runs synchronously (called at session end). Returns the commit
+        summary line on success, None if nothing to commit or on error.
+        Handles index lock contention with retries.
+        """
+        import subprocess
+        import time
+
+        repo = self.config.home
+        if not (repo / ".git").exists():
+            return None
+
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                subprocess.run(
+                    ["git", "add", "-A"],
+                    cwd=repo, capture_output=True, timeout=10,
+                )
+                # Check if there's anything to commit
+                result = subprocess.run(
+                    ["git", "diff", "--cached", "--quiet"],
+                    cwd=repo, capture_output=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    return None  # nothing to commit
+
+                msg = f"Session end: {self.agent_id}"
+                result = subprocess.run(
+                    ["git", "commit", "-m", msg],
+                    cwd=repo, capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    # Extract the summary line (first line of output)
+                    return result.stdout.strip().split("\n")[0]
+                else:
+                    # Might be lock contention
+                    if (repo / ".git" / "index.lock").exists():
+                        raise FileExistsError("index.lock")
+                    return None
+            except (FileExistsError, subprocess.TimeoutExpired):
+                if attempt < max_retries - 1:
+                    time.sleep(1 * (2 ** attempt))  # exponential backoff
+                continue
+            except Exception:
+                return None
+        return None
 
     async def stop(self):
         """Disconnect the agent session."""

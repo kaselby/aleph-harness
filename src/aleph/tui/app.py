@@ -553,6 +553,11 @@ class AlephApp:
                     pass
             except Exception:
                 pass
+            # Auto-commit memory changes to git
+            commit_result = self._harness.commit_memory()
+            if commit_result:
+                _tprint("<dim>Git: {}</dim>", commit_result)
+
             _tprint("<dim>Disconnecting...</dim>")
             await self._harness.stop()
 
