@@ -19,13 +19,19 @@ from markdown_it import MarkdownIt
 
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
+# Register Shift+Enter (CSI u: \x1b[13;2u) for terminals that support it.
+# Map to an unused function key so we can bind it alongside Alt+Enter.
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+from prompt_toolkit.keys import Keys
+ANSI_SEQUENCES["\x1b[13;2u"] = Keys.F20       # kitty/CSI u protocol
+ANSI_SEQUENCES["\x1b[27;2;13~"] = Keys.F20    # xterm modifyOtherKeys format
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML, FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.layout import Layout
-from prompt_toolkit.layout.processors import BeforeInput
 from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 
@@ -393,17 +399,17 @@ class AlephApp:
         self._app: Application | None = None
 
         # Build the prompt_toolkit Application
-        self._input_buffer = Buffer(multiline=False)
+        self._input_buffer = Buffer(multiline=True)
         kb = self._build_keybindings()
 
         layout = Layout(
             HSplit([
                 Window(
-                    BufferControl(
-                        buffer=self._input_buffer,
-                        input_processors=[BeforeInput("> ")],
-                    ),
-                    height=1,
+                    BufferControl(buffer=self._input_buffer),
+                    height=D(min=1, max=10),
+                    wrap_lines=True,
+                    dont_extend_height=True,
+                    get_line_prefix=self._input_prefix,
                 ),
                 Window(FormattedTextControl(self._toolbar), height=1),
             ])
@@ -415,6 +421,12 @@ class AlephApp:
             full_screen=False,
             style=TUI_STYLE,
         )
+
+    def _input_prefix(self, line_number: int, wrap_count: int) -> list[tuple[str, str]]:
+        """Prefix for input lines: '> ' on first line, '  ' on continuations."""
+        if line_number == 0 and wrap_count == 0:
+            return [("", "> ")]
+        return [("", "  ")]
 
     def _build_keybindings(self) -> KeyBindings:
         """Create keybindings with state-based filters."""
@@ -452,6 +464,18 @@ class AlephApp:
 
             # Run response as background task — Application keeps processing keys
             asyncio.ensure_future(app_ref._send_and_receive(text))
+
+        # Enter while receiving — suppress default multiline newline insertion
+        @kb.add("enter", filter=is_receiving)
+        def handle_enter_receiving(event):
+            pass
+
+        # Newline insertion: Alt+Enter, Shift+Enter, or CSI u Shift+Enter
+        @kb.add("escape", "enter")  # Alt+Enter (universal)
+        @kb.add("c-j")              # \n from iTerm2 Shift+Enter mapping
+        @kb.add(Keys.F20)           # CSI u Shift+Enter (kitty/WezTerm/Ghostty)
+        def handle_newline(event):
+            event.current_buffer.newline()
 
         # Escape interrupts the current response
         @kb.add("escape", filter=is_receiving)
