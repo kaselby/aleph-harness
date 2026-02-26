@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Spawning depth (for recursion control)",
     )
+    parser.add_argument(
+        "--ephemeral",
+        action="store_true",
+        help="Ephemeral session: skip handoffs, session recaps, and exit summary",
+    )
     return parser.parse_args()
 
 
@@ -50,6 +55,7 @@ def main():
         prompt=args.prompt,
         parent=args.parent,
         depth=args.depth,
+        ephemeral=args.ephemeral,
     )
 
     harness = AlephHarness(config)

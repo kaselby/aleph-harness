@@ -103,6 +103,15 @@ class AlephHarness:
         self._client: ClaudeSDKClient | None = None
         self._expected_model = _resolve_model(config.model)
         self._model_verified = False
+        self._permission_hook = None
+
+    def set_permission_hook(self, hook) -> None:
+        """Register a PreToolUse hook for permission handling.
+
+        Must be called before start(). The TUI creates the hook via
+        create_permission_hook() and passes it here.
+        """
+        self._permission_hook = hook
 
     def _build_options(self) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions from config."""
@@ -149,17 +158,18 @@ class AlephHarness:
             ctx += "\n\n---\n## Memory Context\n\n"
             ctx += context_file.read_text()
 
-        # Inject handoff and session recap in a clearly demarcated block
+        # Inject handoff and session recap (skip in ephemeral mode)
         handoff_file = self.config.memory_path / "handoff.md"
         sessions_path = self.config.memory_path / "sessions"
         handoff_content = None
         recap_content = None
 
-        if handoff_file.exists():
-            handoff_content = handoff_file.read_text()
-            handoff_file.unlink()
+        if not self.config.ephemeral:
+            if handoff_file.exists():
+                handoff_content = handoff_file.read_text()
+                handoff_file.unlink()
 
-        recap_content = _build_session_recap(sessions_path)
+            recap_content = _build_session_recap(sessions_path)
 
         if handoff_content or recap_content:
             ctx += "\n\n---\n## Session Continuity\n\n"
@@ -199,6 +209,12 @@ class AlephHarness:
                 HookMatcher(matcher="mcp__aleph__activate_skill", hooks=[skill_context]),
             ],
         }
+
+        # Permission hook — fires before every tool call for interactive approval
+        if self._permission_hook:
+            hooks["PreToolUse"] = [
+                HookMatcher(matcher=None, hooks=[self._permission_hook]),
+            ]
 
         # Build MCP server for framework tools
         aleph_server = create_aleph_mcp_server(self.config.inbox_path, self.config.skills_path)

@@ -44,6 +44,9 @@ class AlephConfig:
     parent: str | None = None
     depth: int = 0
 
+    # Ephemeral mode — skip handoffs, session recaps, and exit summary
+    ephemeral: bool = False
+
     @property
     def system_prompt_path(self) -> Path:
         return self.home / "ALEPH.md"

@@ -48,6 +48,12 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import StreamEvent
 
 from ..harness import AlephHarness
+from ..permissions import (
+    PermissionMode,
+    PermissionRequest,
+    create_permission_hook,
+    needs_permission,
+)
 
 # Max lines of tool result output to show inline
 TOOL_RESULT_MAX_LINES = 10
@@ -64,6 +70,14 @@ TUI_STYLE = Style.from_dict({
     "text": "#cccccc",
     "text-heading": "#e0e0e0 bold",
     "md-code": "#88c0d0",
+    "diff-add": "ansigreen",
+    "diff-rm": "ansired",
+    "diff-hunk": "ansicyan",
+    "perm-prompt": "ansiyellow bold",
+    "perm-key": "ansicyan bold",
+    "mode-safe": "ansired bold",
+    "mode-default": "ansiyellow bold",
+    "mode-yolo": "ansigreen bold",
 })
 
 
@@ -404,6 +418,8 @@ class AlephApp:
         self._receiving = False
         self._interrupt_in_flight = False
         self._receive_task: asyncio.Task | None = None
+        self._perm_mode = PermissionMode.DEFAULT
+        self._pending_permission: PermissionRequest | None = None
         self._app: Application | None = None
 
         # Build the prompt_toolkit Application
@@ -449,8 +465,40 @@ class AlephApp:
         def is_idle():
             return not app_ref._receiving
 
+        @Condition
+        def is_permission_pending():
+            return app_ref._pending_permission is not None
+
+        # --- Permission keybindings ---
+
+        # Y accepts pending permission
+        @kb.add("y", filter=is_permission_pending)
+        def handle_perm_accept(event):
+            req = app_ref._pending_permission
+            if req and not req.event.is_set():
+                req.decide(True)
+
+        # N rejects pending permission
+        @kb.add("n", filter=is_permission_pending)
+        def handle_perm_reject(event):
+            req = app_ref._pending_permission
+            if req and not req.event.is_set():
+                req.decide(False)
+
+        # Suppress Enter during permission prompt
+        @kb.add("enter", filter=is_permission_pending)
+        def handle_enter_permission(event):
+            pass
+
+        # Tab cycles permission mode (not during permission prompt)
+        @kb.add("tab", filter=~is_permission_pending)
+        def handle_tab(event):
+            app_ref._perm_mode = app_ref._perm_mode.next()
+            if app_ref._app:
+                app_ref._app.invalidate()
+
         # Enter submits input (only when not receiving a response)
-        @kb.add("enter", filter=is_idle)
+        @kb.add("enter", filter=is_idle & ~is_permission_pending)
         def handle_enter(event):
             text = app_ref._input_buffer.text.strip()
             if not text:
@@ -474,7 +522,7 @@ class AlephApp:
             app_ref._receive_task = asyncio.ensure_future(app_ref._send_and_receive(text))
 
         # Enter while receiving — suppress default multiline newline insertion
-        @kb.add("enter", filter=is_receiving)
+        @kb.add("enter", filter=is_receiving & ~is_permission_pending)
         def handle_enter_receiving(event):
             pass
 
@@ -503,17 +551,29 @@ class AlephApp:
 
         return kb
 
+    _MODE_STYLE = {
+        PermissionMode.SAFE: "mode-safe",
+        PermissionMode.DEFAULT: "mode-default",
+        PermissionMode.YOLO: "mode-yolo",
+    }
+
     def _toolbar(self) -> HTML:
         """Build the persistent bottom toolbar content."""
         if self._receiving:
             status = "Working..."
         else:
             status = "Ready"
-        parts = [status, self._harness.agent_id]
+
+        mode_style = self._MODE_STYLE[self._perm_mode]
+        mode_html = f"<{mode_style}>{self._perm_mode.value}</{mode_style}>"
+
+        parts = [status, self._harness.agent_id, mode_html]
         if self._context_tokens:
             parts.append(f"{_fmt_tokens(self._context_tokens)} / 200k")
 
-        if self._receiving:
+        if self._pending_permission:
+            parts.append("<perm-key>[y]</perm-key> accept  <perm-key>[n]</perm-key> reject")
+        elif self._receiving:
             parts.append("Esc to interrupt")
 
         return HTML(f" {' | '.join(parts)}")
@@ -525,6 +585,13 @@ class AlephApp:
     async def _main(self) -> None:
         """Main async loop: connect, then run the Application."""
         _tprint("<dim>Connecting...</dim>")
+
+        # Set up permission hook before connecting
+        perm_hook = create_permission_hook(
+            get_mode=lambda: self._perm_mode,
+            request_permission=self._request_permission,
+        )
+        self._harness.set_permission_hook(perm_hook)
 
         try:
             await self._harness.start()
@@ -551,17 +618,18 @@ class AlephApp:
         except (KeyboardInterrupt, EOFError):
             pass
         finally:
-            _tprint("\n<dim>Saving session summary...</dim>")
-            try:
-                await self._harness.send(self._harness.get_summary_prompt())
-                async for _ in self._harness.receive():
+            if not self._harness.config.ephemeral:
+                _tprint("\n<dim>Saving session summary...</dim>")
+                try:
+                    await self._harness.send(self._harness.get_summary_prompt())
+                    async for _ in self._harness.receive():
+                        pass
+                except Exception:
                     pass
-            except Exception:
-                pass
-            # Auto-commit memory changes to git
-            commit_result = self._harness.commit_memory()
-            if commit_result:
-                _tprint("<dim>Git: {}</dim>", commit_result)
+                # Auto-commit memory changes to git
+                commit_result = self._harness.commit_memory()
+                if commit_result:
+                    _tprint("<dim>Git: {}</dim>", commit_result)
 
             _tprint("<dim>Disconnecting...</dim>")
             await self._harness.stop()
@@ -578,10 +646,17 @@ class AlephApp:
             await self._harness.send(text)
 
             async for msg in self._harness.receive():
+                if self._interrupt_in_flight:
+                    # After interrupt, discard remaining messages from this turn
+                    # so they don't leak into the next turn's receive_response().
+                    if isinstance(msg, ResultMessage):
+                        break
+                    continue
                 self._handle_sdk_message(msg)
 
-            self._commit_stream()
-            self._commit_thinking()
+            if not self._interrupt_in_flight:
+                self._commit_stream()
+                self._commit_thinking()
 
         except Exception as e:
             _tprint("\n<err-b>Error:</err-b> {}", str(e))
@@ -594,13 +669,19 @@ class AlephApp:
     async def _do_interrupt(self) -> None:
         """Interrupt the current response.
 
-        Sends a soft interrupt via the SDK control protocol, then cancels
-        the receive task to guarantee the TUI returns to an interactive state
-        even if the CLI doesn't respond to the interrupt.
+        Sends a soft interrupt via the SDK control protocol, then lets
+        _send_and_receive drain remaining messages (it checks the
+        _interrupt_in_flight flag and discards them). A safety-net cancel
+        fires after a timeout in case the subprocess doesn't respond.
         """
         if not self._receiving or self._interrupt_in_flight:
             return
         self._interrupt_in_flight = True
+
+        # Auto-deny any pending permission prompt
+        if self._pending_permission and not self._pending_permission.event.is_set():
+            self._pending_permission.decide(False)
+
         self._commit_stream()
         self._commit_thinking()
         _tprint("\n<dim-i>--- interrupted ---</dim-i>")
@@ -608,8 +689,14 @@ class AlephApp:
             await self._harness.interrupt()
         except Exception:
             pass
-        # Cancel the receive task to break out of the async for loop.
-        # The finally block in _send_and_receive resets _receiving.
+        # Let _send_and_receive drain remaining messages naturally (it sees
+        # _interrupt_in_flight and discards them until ResultMessage).
+        # Schedule a safety cancel in case the subprocess never responds.
+        loop = asyncio.get_event_loop()
+        loop.call_later(5.0, self._force_cancel_receive)
+
+    def _force_cancel_receive(self) -> None:
+        """Safety net: cancel receive task if still running after interrupt timeout."""
         if self._receive_task and not self._receive_task.done():
             self._receive_task.cancel()
 
@@ -670,6 +757,66 @@ class AlephApp:
             if msg.subtype not in ("init",):
                 _tprint("<dim-i>System: {}</dim-i>", msg.subtype)
 
+    # ---- Permissions ----
+
+    async def _request_permission(self, req: PermissionRequest) -> bool:
+        """Display diff/preview and wait for user y/n decision.
+
+        Called by the PreToolUse hook (running in the SDK's anyio task group).
+        Renders the diff, stores the request for keybinding access, and awaits
+        the asyncio.Event that y/n keybindings resolve.
+        """
+        self._commit_stream()
+        self._commit_thinking()
+        self._render_permission_prompt(req)
+
+        self._pending_permission = req
+        if self._app:
+            self._app.invalidate()
+
+        try:
+            await req.event.wait()
+        finally:
+            self._pending_permission = None
+            if self._app:
+                self._app.invalidate()
+
+        if req.result:
+            _tprint("<dim>    accepted</dim>")
+        else:
+            _tprint("<dim>    rejected</dim>")
+
+        return req.result
+
+    def _render_permission_prompt(self, req: PermissionRequest) -> None:
+        """Render diff or command preview for a permission request."""
+        path = req.tool_input.get("file_path", "")
+        if path:
+            _tprint("\n  <tool>\u2192 {}</tool>  <dim>{}</dim>", req.tool_name, path)
+        else:
+            _tprint("\n  <tool>\u2192 {}</tool>", req.tool_name)
+
+        if req.diff_text:
+            _tprint("")
+            for line in req.diff_text.splitlines():
+                # Unified diff coloring
+                if line.startswith("+++") or line.startswith("---"):
+                    _tprint("<dim>    {}</dim>", line)
+                elif line.startswith("+"):
+                    _tprint("<diff-add>    {}</diff-add>", line)
+                elif line.startswith("-"):
+                    _tprint("<diff-rm>    {}</diff-rm>", line)
+                elif line.startswith("@@"):
+                    _tprint("<diff-hunk>    {}</diff-hunk>", line)
+                elif line.startswith("new file"):
+                    _tprint("<dim-i>    {}</dim-i>", line)
+                else:
+                    _tprint("<dim>    {}</dim>", line)
+
+        # Prominent accept/reject prompt
+        _tprint("")
+        _tprint("  <perm-prompt>Allow {}?</perm-prompt>  <perm-key>[y]</perm-key> accept  <perm-key>[n]</perm-key> reject", req.tool_name)
+
     # ---- Rendering ----
 
     def _on_stream_thinking(self, text: str) -> None:
@@ -684,6 +831,12 @@ class AlephApp:
         self._commit_stream()
         self._commit_thinking()
 
+        if needs_permission(self._perm_mode, name):
+            # Permission will be requested — the PreToolUse hook will render
+            # the full diff/preview, so just show a minimal header here.
+            return
+
+        # Auto-approved — show abbreviated summary
         details = _format_tool_input(name, input)
         if details:
             indented = "\n".join(f"    {line}" for line in details.split("\n"))
