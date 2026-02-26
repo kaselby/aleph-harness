@@ -291,6 +291,12 @@ class AlephHarness:
         if self._client:
             await self._client.interrupt()
 
+    async def force_stop(self):
+        """Force-kill the CLI subprocess. Use when interrupt doesn't work."""
+        if self._client:
+            await self._client.disconnect()
+            self._client = None
+
     def get_summary_prompt(self) -> str:
         """Return the prompt used to request a session summary."""
         today = date.today().strftime("%Y-%m-%d")

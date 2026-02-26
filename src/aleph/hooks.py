@@ -226,15 +226,19 @@ def _build_session_recap(sessions_path: Path) -> str:
 
     content_parts = []
     for f in today_files:
-        content_parts.append(f"### {f.stem}\n\n{f.read_text()}")
+        content_parts.append(f"### {f.stem}\nFile: {f}\n\n{f.read_text()}")
     combined = "\n\n---\n\n".join(content_parts)
 
     prompt = (
-        "Below are session summaries from today for a persistent AI assistant called Aleph. "
-        "Produce a concise recap (5-10 lines max) covering: what was worked on, "
-        "key decisions made, current state of things, and anything unfinished. "
+        "Below are session summaries from today for a persistent AI assistant called Aleph, "
+        "ordered from MOST RECENT to oldest. Each session header includes the file path.\n\n"
+        "Produce a recap covering: what was worked on, key decisions, current state, "
+        "and anything unfinished. Structure the recap in chronological order (most recent "
+        "session FIRST, clearly labeled). For each session mentioned, include its file path "
+        "so the agent can read the full summary if needed.\n\n"
         "Write in second person ('you did X'). Be specific — names, paths, "
-        "details matter more than vague summaries.\n\n"
+        "details matter more than vague summaries. Keep it concise but don't sacrifice "
+        "clarity for brevity.\n\n"
         f"{combined}"
     )
 

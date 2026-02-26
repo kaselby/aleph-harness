@@ -83,6 +83,8 @@ Also deferred: **per-agent git worktrees** — each running agent gets its own w
 - TUI: message timestamps / elapsed time between messages (subtle header or separator showing when each message was sent and how long the gap was)
 - TUI: diff view, syntax highlighting, rewind/fork
 - TUI: live markdown rendering during streaming (study `markdown-it-py` as parser — it's what Textual uses under the hood. Feed token stream into a FormattedText builder. Current approach: plain streaming → markdown-rendered scrollback at commit time.)
+- TUI: keep context usage visible in status bar while tool calls are running (currently only updates between turns)
+- Tool framework: per-tool budget limits (some APIs have free monthly credits — e.g. Exa, Tavily — so a blanket spend cap doesn't reflect actual cost structure. Allow setting per-tool thresholds or marking tools as "free tier" up to N calls)
 - `/command` shortcuts in TUI for skill activation
 - Stop hook for catching unread messages at turn end
 - PreCompact hook for persisting critical context before compaction

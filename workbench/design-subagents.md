@@ -60,6 +60,8 @@ After the initial prompt's turn completes, the subagent drops into the interacti
 
 **Recommendation:** Start with prompt convention only. Add `--oneshot` later if needed. Persistent sessions are more flexible and let the user course-correct via tmux.
 
+*USER COMMENT: One thing I'm considering is giving you an exit tool and letting you decide for yourself if the session is worth keeping around for me to connect to, or cleaning it up*
+
 ### 4. `send_message` missing `from` field
 
 The message metadata has `summary`, `priority`, and `timestamp` but no sender. When a subagent messages the parent, the parent can't tell who sent it without reading the body.

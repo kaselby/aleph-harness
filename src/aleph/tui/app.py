@@ -489,11 +489,15 @@ class AlephApp:
         def handle_escape(event):
             asyncio.ensure_future(app_ref._do_interrupt())
 
-        # Ctrl+C exits (interrupts first if receiving)
+        # Ctrl+C: if idle, exit. If receiving, force-kill and exit.
         @kb.add("c-c")
         async def handle_quit(event):
             if app_ref._receiving:
-                await app_ref._do_interrupt()
+                _tprint("\n<dim-i>--- force killing subprocess ---</dim-i>")
+                try:
+                    await app_ref._harness.force_stop()
+                except Exception:
+                    pass
             event.app.exit()
 
         return kb
@@ -587,7 +591,7 @@ class AlephApp:
                 self._app.invalidate()
 
     async def _do_interrupt(self) -> None:
-        """Interrupt the current response."""
+        """Interrupt the current response via SDK control protocol."""
         if not self._receiving or self._interrupt_in_flight:
             return
         self._interrupt_in_flight = True
