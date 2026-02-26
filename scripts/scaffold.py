@@ -165,14 +165,9 @@ def scaffold():
     usage_dir = ALEPH_HOME / "usage"
     usage_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create .env template if it doesn't exist
-    env_file = ALEPH_HOME / ".env"
-    if not env_file.exists():
-        env_file.write_text(
-            "# API keys for paid tools. Loaded automatically by the tool runner.\n"
-            "# These are only used by ~/.aleph/tools — not exported to your shell.\n"
-        )
-        print(f"  Created {env_file}")
+    # Create credentials directory for API keys
+    creds_dir = ALEPH_HOME / "credentials"
+    creds_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy default skills
     skills_src = REPO_ROOT / "defaults" / "skills"
