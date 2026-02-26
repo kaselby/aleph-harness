@@ -185,10 +185,10 @@ tasks:
 
   - id: 24
     description: TUI — multiline input and text wrapping
-    status: open
+    status: done
     notes: >
-      Enter submits, no way to insert newlines. Need Alt+Enter or similar
-      for newline insertion, plus text wrapping for long input lines.
+      Alt+Enter inserts newlines, Enter submits. Text wrapping implemented.
+      See commit 8132503.
 
   - id: 25
     description: Skill activation discipline

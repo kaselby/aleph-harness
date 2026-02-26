@@ -26,10 +26,8 @@ For now all agents are interactive (ClaudeSDKClient). Headless mode (query() for
 
 **Revisit when:** We want to spawn subagents that don't need a TUI tab.
 
-### Session handoff protocol
-Philosophy is settled (persist and hand off, don't fight compaction). Protocol is not — what goes in the handoff doc, where it lives, how the new session finds it.
-
-**Revisit when:** Sessions start hitting context limits in practice.
+### ~~Session handoff protocol~~ RESOLVED
+Implemented. Agent writes to `~/.aleph/memory/handoff.md`, harness injects it into the system prompt on next startup and deletes the file. Documentation in ALEPH.md. Session recaps are also generated automatically from today's session files via Haiku.
 
 ### Message cleanup / archiving
 Read messages get marked (.read file) but never deleted. Eventually inboxes will accumulate. Need a cleanup strategy — time-based, count-based, or explicit agent-managed archival.
