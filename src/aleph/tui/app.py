@@ -61,6 +61,8 @@ TUI_STYLE = Style.from_dict({
     "dim-i": "#888888 italic",
     "err": "ansired",
     "err-b": "ansired bold",
+    "text": "#cccccc",
+    "text-heading": "#e0e0e0 bold",
     "md-code": "#88c0d0",
 })
 
@@ -109,7 +111,7 @@ def _render_block_tokens(tokens: list, result: _StyleTuples) -> None:
 
         # --- Headings ---
         if tok.type == "heading_open":
-            style_ctx.append("bold")
+            style_ctx.append("class:text-heading")
         elif tok.type == "heading_close":
             style_ctx.pop()
             result.append(("", "\n"))
@@ -156,9 +158,9 @@ def _render_block_tokens(tokens: list, result: _StyleTuples) -> None:
                 list_stack[-1] = (kind, count)
                 indent = "  " * len(list_stack)
                 if kind == "bullet":
-                    result.append(("", f"{indent}\u2022 "))
+                    result.append(("class:text", f"{indent}\u2022 "))
                 else:
-                    result.append(("", f"{indent}{count}. "))
+                    result.append(("class:text", f"{indent}{count}. "))
         elif tok.type == "list_item_close":
             result.append(("", "\n"))
 
@@ -195,8 +197,11 @@ def _render_inline(
     """Render inline token children with a style stack for nesting."""
     for tok in children:
         if tok.type == "text":
-            style = " ".join(style_stack) if style_stack else ""
-            result.append((style, tok.content))
+            parts = list(style_stack) if style_stack else []
+            # Ensure text color unless an explicit class is already set
+            if not any(p.startswith("class:") for p in parts):
+                parts.insert(0, "class:text")
+            result.append((" ".join(parts), tok.content))
         elif tok.type == "strong_open":
             style_stack.append("bold")
         elif tok.type == "strong_close":
@@ -253,13 +258,13 @@ def _render_table(tokens: list, result: _StyleTuples) -> None:
         ]
         line = "  " + " \u2502 ".join(padded) + "\n"
         if is_hdr:
-            result.append(("bold", line))
+            result.append(("class:text-heading", line))
             sep = "  " + "\u2500\u253c\u2500".join(
                 "\u2500" * w for w in col_widths
             ) + "\n"
             result.append(("class:dim", sep))
         else:
-            result.append(("", line))
+            result.append(("class:text", line))
 
 
 def _inline_to_plain(children: list) -> str:
@@ -394,7 +399,8 @@ class AlephApp:
         self._tool_name_queue: list[str] = []
         self._total_input_tokens = 0
         self._total_output_tokens = 0
-        self._context_tokens = 0  # latest turn's input+output ≈ current context size
+        self._context_tokens = 0  # latest API call's total input ≈ current context size
+        self._last_call_usage = {}  # per-API-call usage from message_delta events
         self._receiving = False
         self._interrupt_in_flight = False
         self._app: Application | None = None
@@ -592,7 +598,8 @@ class AlephApp:
         """Route an incoming SDK message to the appropriate handler."""
         if isinstance(msg, StreamEvent):
             event = msg.event
-            if event.get("type") == "content_block_delta":
+            etype = event.get("type", "")
+            if etype == "content_block_delta":
                 delta = event.get("delta", {})
                 delta_type = delta.get("type", "")
                 if delta_type == "text_delta":
@@ -605,6 +612,11 @@ class AlephApp:
                     thinking = delta.get("thinking", "")
                     if thinking:
                         self._on_stream_thinking(thinking)
+            elif etype == "message_delta":
+                # Per-API-call usage — track the latest for context display
+                usage = event.get("usage", {})
+                if usage:
+                    self._last_call_usage = usage
 
         elif isinstance(msg, AssistantMessage):
             # Verify model on first response
@@ -676,9 +688,19 @@ class AlephApp:
         self._commit_stream()
         self._commit_thinking()
 
+        # Use per-API-call usage from the last message_delta for context tracking.
+        # ResultMessage.usage is aggregated across all API calls in the tool loop,
+        # so it overstates context size for multi-turn interactions.
+        last = self._last_call_usage
+        if last:
+            self._context_tokens = (
+                last.get("input_tokens", 0)
+                + last.get("cache_read_input_tokens", 0)
+                + last.get("cache_creation_input_tokens", 0)
+            )
+
+        # Aggregated stats for the summary line
         usage = msg.usage or {}
-        # input_tokens is only uncached tokens; the real context size includes
-        # cache_read and cache_creation tokens as well.
         input_tok = (
             usage.get("input_tokens", 0)
             + usage.get("cache_read_input_tokens", 0)
@@ -687,13 +709,14 @@ class AlephApp:
         output_tok = usage.get("output_tokens", 0)
         self._total_input_tokens += input_tok
         self._total_output_tokens += output_tok
-        self._context_tokens = input_tok
 
         parts = [f"{msg.num_turns} turns", f"{msg.duration_ms}ms"]
         if input_tok or output_tok:
             parts.append(f"{_fmt_tokens(input_tok)} in / {_fmt_tokens(output_tok)} out")
         summary = "  |  ".join(parts)
         _tprint("\n<dim>--- {} ---</dim>", summary)
+
+        self._last_call_usage = {}
 
     # ---- Helpers ----
 
