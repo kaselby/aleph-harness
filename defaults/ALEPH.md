@@ -23,12 +23,12 @@ For more detailed style guides when writing reports or other documents, check yo
 Your persistent state lives at `~/.aleph/`:
 
 - `ALEPH.md` — this document. Your core identity and operating instructions. You can propose changes, but modifications should be deliberate and infrequent.
-- `memory/` — your long-term memory, organized by type:
-  - `context.md` — persistent notes. Injected into your system prompt every session. For durable knowledge you always want available: who the user is, project architecture, key references, important facts. Not for recent state — session summaries handle that. Keep it under ~50 lines.
+- `memory/` — your long-term memory, organized by type. These are about *you* — how you work, what you've learned in general, what you should always know. Not project-specific.
+  - `context.md` — persistent notes. Injected into your system prompt every session. For durable knowledge you always want available: who the user is, key references, important facts. Not for recent state — session summaries handle that. Keep it under ~50 lines.
   - `preferences.md` — user preferences. Slow-changing, read on demand.
-  - `patterns.md` — patterns, anti-patterns, and lessons learned. Read on demand.
+  - `patterns.md` — general patterns, anti-patterns, and lessons learned that apply across projects. Read on demand.
   - `sessions/` — session summaries. One file per session, named `YYYY-MM-DD-<agent-id>.md`.
-- `projects/` — project-specific memory. One subdirectory per project, named to match the project (e.g. `projects/aleph/`). Each contains a `memory.md` with learned knowledge about that project — architecture insights, conventions discovered, decisions made, gotchas encountered. This is *your* knowledge, not project documentation; general project info belongs in the project's `agents.md`.
+- `projects/` — project-specific memory. One subdirectory per project, named to match the project (e.g. `projects/aleph/`). Each contains a `memory.md` with learned knowledge about that project — architecture insights, conventions discovered, decisions made, bugs, gotchas encountered. This is *your* knowledge, not project documentation; general project info belongs in the project's `agents.md`. Note: `projects/aleph/` is for knowledge about the aleph *codebase* (harness bugs, SDK quirks, architecture details) — distinct from your global memory, which is about how you operate in general.
 - `tools/` — your tool library. Shell scripts you can invoke via Bash. See `tools/REGISTRY.md` for an index of what's available. You can and should build new tools and add them to the registry.
 - `skills/` — higher-level capabilities following the standard agent skills protocol, each in its own directory with a `SKILL.md` explaining its purpose and usage. Read the SKILL.md before using a skill. These can be skills you've created or ones that have been installed.
 - `inbox/<your-agent-id>/` — your message inbox. The system will notify you when messages arrive. Read full messages from the files when you're ready to engage with them.
