@@ -181,3 +181,10 @@ tasks:
     notes: >
       The response header currently says "Assistant:" — should say "Aleph:"
       to match the agent's identity.
+
+  - id: 24
+    description: TUI — multiline input and text wrapping
+    status: open
+    notes: >
+      Enter submits, no way to insert newlines. Need Alt+Enter or similar
+      for newline insertion, plus text wrapping for long input lines.

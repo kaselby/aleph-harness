@@ -32,6 +32,7 @@ from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 
@@ -523,22 +524,30 @@ class AlephApp:
         _tprint("<dim>Session started: {}</dim>\n", self._harness.agent_id)
 
         try:
-            # Auto-send initial prompt if provided (e.g. subagent launch)
-            initial_prompt = self._harness.config.prompt
-            if initial_prompt:
-                _tprint("<user>Prompt:</user> {}", initial_prompt)
+            with patch_stdout():
+                # Auto-send initial prompt if provided (e.g. subagent launch)
+                initial_prompt = self._harness.config.prompt
+                if initial_prompt:
+                    _tprint("<user>Prompt:</user> {}", initial_prompt)
 
-                async def send_initial():
-                    await asyncio.sleep(0)  # yield once to let Application start
-                    await self._send_and_receive(initial_prompt)
+                    async def send_initial():
+                        await asyncio.sleep(0)  # yield once to let Application start
+                        await self._send_and_receive(initial_prompt)
 
-                asyncio.ensure_future(send_initial())
+                    asyncio.ensure_future(send_initial())
 
-            await self._app.run_async()
+                await self._app.run_async()
         except (KeyboardInterrupt, EOFError):
             pass
         finally:
-            _tprint("\n<dim>Disconnecting...</dim>")
+            _tprint("\n<dim>Saving session summary...</dim>")
+            try:
+                await self._harness.send(self._harness.get_summary_prompt())
+                async for _ in self._harness.receive():
+                    pass
+            except Exception:
+                pass
+            _tprint("<dim>Disconnecting...</dim>")
             await self._harness.stop()
 
     async def _send_and_receive(self, text: str) -> None:

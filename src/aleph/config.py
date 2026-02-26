@@ -50,7 +50,7 @@ class AlephConfig:
 
     @property
     def memory_path(self) -> Path:
-        return self.home / "memory.md"
+        return self.home / "memory"
 
     @property
     def inbox_path(self) -> Path:

@@ -140,6 +140,12 @@ class AlephHarness:
 
         ctx += f"\nToday's date is **{date.today().strftime('%B %d, %Y')}**."
 
+        # Inject memory context (hot tier) if it exists
+        context_file = self.config.memory_path / "context.md"
+        if context_file.exists():
+            ctx += "\n\n---\n## Memory Context\n\n"
+            ctx += context_file.read_text()
+
         full_prompt = system_prompt + ctx
 
         # Set up inbox directory
@@ -249,6 +255,22 @@ class AlephHarness:
         """Interrupt the agent's current turn."""
         if self._client:
             await self._client.interrupt()
+
+    def get_summary_prompt(self) -> str:
+        """Return the prompt used to request a session summary."""
+        today = date.today().strftime("%Y-%m-%d")
+        summary_path = self.config.memory_path / "sessions" / f"{today}-{self.agent_id}.md"
+
+        return (
+            f"[Session ending] Write a brief session summary to {summary_path}. "
+            f"Use this structure:\n\n"
+            f"## Summary\n(1-2 sentences: what was this session about)\n\n"
+            f"## Decisions\n(key decisions made, if any)\n\n"
+            f"## Changes\n(what was built, modified, or configured)\n\n"
+            f"## Open threads\n(what's unfinished or needs follow-up)\n\n"
+            f"Also update ~/.aleph/memory/context.md if the current state has "
+            f"changed significantly. Keep it under 50 lines."
+        )
 
     async def stop(self):
         """Disconnect the agent session."""

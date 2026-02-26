@@ -78,13 +78,17 @@ def scaffold():
     dst_prompt.write_text(prompt)
     print(f"  Assembled {dst_prompt}")
 
-    # Create empty memory.md if it doesn't exist
-    memory = ALEPH_HOME / "memory.md"
-    if memory.exists():
-        print(f"  Skipped {memory} (already exists)")
-    else:
-        memory.write_text("")
-        print(f"  Created {memory}")
+    # Create memory directory structure
+    memory_dir = ALEPH_HOME / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "sessions").mkdir(exist_ok=True)
+    for name in ["context.md", "preferences.md", "patterns.md"]:
+        f = memory_dir / name
+        if not f.exists():
+            f.write_text("")
+            print(f"  Created {f}")
+        else:
+            print(f"  Skipped {f} (already exists)")
 
     # Create empty tools/REGISTRY.md if it doesn't exist
     registry = ALEPH_HOME / "tools" / "REGISTRY.md"

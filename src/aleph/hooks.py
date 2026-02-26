@@ -143,12 +143,15 @@ def create_reminder_hook(interval: int = 50):
                 "hookEventName": "PostToolUse",
                 "additionalContext": (
                     "[System reminder]: Consider updating memory with any important "
-                    "observations from this session. Review ~/.aleph/memory.md."
+                    "observations from this session. Update ~/.aleph/memory/context.md "
+                    "(hot tier), ~/.aleph/memory/patterns.md (lessons learned), or "
+                    "~/.aleph/memory/preferences.md as appropriate."
                 ),
             }
         }
 
     return reminder_hook
+
 
 
 def _extract_summary(msg_file: Path) -> str | None:
