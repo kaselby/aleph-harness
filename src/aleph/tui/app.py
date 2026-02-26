@@ -403,6 +403,7 @@ class AlephApp:
         self._last_call_usage = {}  # per-API-call usage from message_delta events
         self._receiving = False
         self._interrupt_in_flight = False
+        self._receive_task: asyncio.Task | None = None
         self._app: Application | None = None
 
         # Build the prompt_toolkit Application
@@ -470,7 +471,7 @@ class AlephApp:
             _tprint("<user>You:</user> {}", text)
 
             # Run response as background task — Application keeps processing keys
-            asyncio.ensure_future(app_ref._send_and_receive(text))
+            app_ref._receive_task = asyncio.ensure_future(app_ref._send_and_receive(text))
 
         # Enter while receiving — suppress default multiline newline insertion
         @kb.add("enter", filter=is_receiving)
@@ -544,7 +545,7 @@ class AlephApp:
                         await asyncio.sleep(0)  # yield once to let Application start
                         await self._send_and_receive(initial_prompt)
 
-                    asyncio.ensure_future(send_initial())
+                    self._receive_task = asyncio.ensure_future(send_initial())
 
                 await self._app.run_async()
         except (KeyboardInterrupt, EOFError):
@@ -591,7 +592,12 @@ class AlephApp:
                 self._app.invalidate()
 
     async def _do_interrupt(self) -> None:
-        """Interrupt the current response via SDK control protocol."""
+        """Interrupt the current response.
+
+        Sends a soft interrupt via the SDK control protocol, then cancels
+        the receive task to guarantee the TUI returns to an interactive state
+        even if the CLI doesn't respond to the interrupt.
+        """
         if not self._receiving or self._interrupt_in_flight:
             return
         self._interrupt_in_flight = True
@@ -602,6 +608,10 @@ class AlephApp:
             await self._harness.interrupt()
         except Exception:
             pass
+        # Cancel the receive task to break out of the async for loop.
+        # The finally block in _send_and_receive resets _receiving.
+        if self._receive_task and not self._receive_task.done():
+            self._receive_task.cancel()
 
     def _handle_sdk_message(self, msg: object) -> None:
         """Route an incoming SDK message to the appropriate handler."""
