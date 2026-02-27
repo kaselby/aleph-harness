@@ -112,6 +112,11 @@ Open questions: how to define "project directory" for TODO.yml detection when th
 
 **Revisit when:** Building context-aware reminders, or when the hook system needs more sophistication generally.
 
+### Runtime agent renaming
+Allow agents to rename themselves at runtime to reflect what they're working on (visible in `tmux list-sessions`). Challenge: agent ID is used for inbox routing, tmux session name, session summaries, and message `from` fields — all need to stay in sync. Would require an MCP tool that atomically updates harness internal state, renames the inbox directory, and renames the tmux session. For now, use meaningful `--id` values at launch.
+
+**Revisit when:** Launch-time naming proves insufficient for multi-agent discoverability.
+
 ### Aleph manager daemon
 A persistent process that serves as the central authority for agent lifecycle. Currently there's no way to know which agents are alive — inbox directories persist after sessions end, tmux detection only works for tmux-spawned agents, and there's no cleanup of stale state.
 

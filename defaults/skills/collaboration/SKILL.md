@@ -17,16 +17,15 @@ aleph --detach --ephemeral [--id <name>] [--model <model>] [--project <path>]
 
 All aleph instances run inside tmux. `--detach` prevents auto-attaching to the new session — the command prints the agent ID and returns immediately. Always launch with `--ephemeral` — spawned agents should not write session summaries or update persistent memory. (Omit `--ephemeral` only if you specifically need the peer to persist its own session history.)
 
-After launching, send a message with instructions and your callback ID:
+Use `--id` to give the agent a descriptive name that reflects its task — this is what shows up in `tmux list-sessions`.
+
+After launching, send a message with instructions and your callback ID. Messages can be sent immediately — they're written to the inbox directory and will be picked up when the agent starts, no need to wait.
 
 ```bash
-# Launch
-aleph --detach --ephemeral --id worker-1
-# Wait for it to connect, then send instructions
-sleep 8
+aleph --detach --ephemeral --id auth-worker
 ```
 ```
-send_message(to="worker-1", from="<your-id>", summary="Task assignment", body="...", priority="normal")
+send_message(to="auth-worker", from="<your-id>", summary="Task assignment", body="...", priority="normal")
 ```
 
 This pattern accomplishes two things: the peer knows who launched it and where to send results.

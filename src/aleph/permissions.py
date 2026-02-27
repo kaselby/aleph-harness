@@ -63,8 +63,8 @@ def _diff_edit(tool_input: dict[str, Any]) -> str:
     old = tool_input.get("old_string", "")
     new = tool_input.get("new_string", "")
 
-    old_lines = old.splitlines(keepends=True)
-    new_lines = new.splitlines(keepends=True)
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
 
     diff_lines = list(difflib.unified_diff(
         old_lines, new_lines,
@@ -82,8 +82,8 @@ def _diff_write(tool_input: dict[str, Any]) -> str:
     if path.exists():
         try:
             existing = path.read_text()
-            old_lines = existing.splitlines(keepends=True)
-            new_lines = content.splitlines(keepends=True)
+            old_lines = existing.splitlines()
+            new_lines = content.splitlines()
             diff_lines = list(difflib.unified_diff(
                 old_lines, new_lines,
                 fromfile=path_str, tofile=path_str,

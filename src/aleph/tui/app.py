@@ -416,8 +416,6 @@ class AlephApp:
         self._stream_chunks: list[str] = []
         self._thinking_buffer = ""
         self._tool_name_queue: list[str] = []
-        self._total_input_tokens = 0
-        self._total_output_tokens = 0
         self._context_tokens = 0  # latest API call's total input ≈ current context size
         self._last_call_usage = {}  # per-API-call usage from message_delta events
         self._receiving = False
@@ -556,8 +554,15 @@ class AlephApp:
         def handle_newline(event):
             event.current_buffer.newline()
 
-        # Escape interrupts the current response
-        @kb.add("escape", filter=is_receiving)
+        # Escape during permission prompt: reject (same as 'n'), don't interrupt
+        @kb.add("escape", filter=is_permission_pending)
+        def handle_escape_permission(event):
+            req = app_ref._pending_permission
+            if req and not req.event.is_set():
+                req.decide(False)
+
+        # Escape interrupts the current response (but not during permission prompts)
+        @kb.add("escape", filter=is_receiving & ~is_permission_pending)
         def handle_escape(event):
             asyncio.ensure_future(app_ref._do_interrupt())
 
@@ -591,6 +596,9 @@ class AlephApp:
         mode_html = f"<{mode_style}>{self._perm_mode.value}</{mode_style}>"
 
         parts = [status, self._harness.agent_id, mode_html]
+
+        if self._harness.config.ephemeral:
+            parts.append("<err>ephemeral</err>")
         if self._context_tokens:
             parts.append(f"{_fmt_tokens(self._context_tokens)} / 200k")
 
@@ -1054,20 +1062,7 @@ class AlephApp:
                 + last.get("cache_creation_input_tokens", 0)
             )
 
-        # Aggregated stats for the summary line
-        usage = msg.usage or {}
-        input_tok = (
-            usage.get("input_tokens", 0)
-            + usage.get("cache_read_input_tokens", 0)
-            + usage.get("cache_creation_input_tokens", 0)
-        )
-        output_tok = usage.get("output_tokens", 0)
-        self._total_input_tokens += input_tok
-        self._total_output_tokens += output_tok
-
         parts = [f"{msg.num_turns} turns", f"{msg.duration_ms}ms"]
-        if input_tok or output_tok:
-            parts.append(f"{_fmt_tokens(input_tok)} in / {_fmt_tokens(output_tok)} out")
         summary = "  |  ".join(parts)
         _tprint("\n<dim>--- {} ---</dim>", summary)
 
