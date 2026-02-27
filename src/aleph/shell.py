@@ -103,7 +103,10 @@ class PersistentShell:
                         # Parse exit code and cwd from sentinel line
                         after = decoded.split(sentinel)[1].strip()
                         parts = after.split(" ", 1)
-                        exit_code = int(parts[0]) if parts else -1
+                        try:
+                            exit_code = int(parts[0]) if parts else -1
+                        except ValueError:
+                            exit_code = -1
                         cwd = parts[1] if len(parts) > 1 else self._cwd
                         self._cwd = cwd
                         break
@@ -138,6 +141,26 @@ class PersistentShell:
                 "elapsed_ms": elapsed_ms,
                 "timed_out": timed_out,
             }
+
+    async def restart(self):
+        """Kill the current shell and let the next command spawn a fresh one.
+
+        Use this to recover from a corrupted shell state (e.g. a command
+        that broke the sentinel protocol or left the process unresponsive).
+        Resets cwd to a known-good directory to avoid spawn failures.
+        """
+        async with self._lock:
+            if self._process and self._process.returncode is None:
+                self._process.kill()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    pass
+            self._process = None
+            # Reset cwd — a corrupted sentinel parse can leave _cwd as garbage,
+            # which makes _spawn fail with ENOENT.
+            if not os.path.isdir(self._cwd):
+                self._cwd = os.path.expanduser("~")
 
     async def close(self):
         """Terminate the subprocess gracefully."""

@@ -39,6 +39,8 @@ tmux kill-session -t <agent-id>         # kill a specific agent
 tmux kill-server                        # kill all agents
 ```
 
+Treat other alephs as collaborators, not disposable processes. Don't kill sessions preemptively — let peers finish their work and exit naturally. If cleanup is needed, check `tmux list-sessions` and `capture-pane` first.
+
 ## Protocol
 
 1. **Use messages to coordinate.** Send task assignments, status updates, and results via `send_message`. Include your agent ID so the recipient can reply.

@@ -172,3 +172,4 @@ def create_aleph_mcp_server(
         tools=[bash_tool, activate_skill, send_message],
     )
     return server, cleanup
+

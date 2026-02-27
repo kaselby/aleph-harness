@@ -940,9 +940,10 @@ class AlephApp:
                         )
 
         elif isinstance(msg, ResultMessage):
-            # Capture session ID for conversation log archival
+            # Capture session ID for conversation log archival and resume support
             if msg.session_id:
                 self._harness.session_id = msg.session_id
+                self._harness.register_session()
             self._on_turn_complete(msg)
 
         elif isinstance(msg, SystemMessage):

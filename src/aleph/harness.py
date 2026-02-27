@@ -1,5 +1,6 @@
 """Core harness — SDK integration and agent lifecycle."""
 
+import json
 import os
 
 # Allow launching from inside a Claude Code session (or another Aleph instance)
@@ -212,6 +213,49 @@ class AlephHarness:
         self._permission_hook = None
         self._shell_cleanup = None
 
+    @property
+    def _registry_path(self) -> Path:
+        return self.config.home / "logs" / "session-registry.json"
+
+    def register_session(self) -> None:
+        """Persist the agent_id → session_uuid mapping to the registry.
+
+        Called as soon as the session UUID is captured from ResultMessage,
+        so the mapping survives crashes.
+        """
+        if not self.session_id:
+            return
+
+        registry = {}
+        if self._registry_path.exists():
+            try:
+                registry = json.loads(self._registry_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        registry[self.agent_id] = {
+            "session_uuid": self.session_id,
+            "cwd": self.config.project or os.getcwd(),
+            "model": self.config.model,
+            "started_at": datetime.now().isoformat(),
+        }
+
+        self._registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self._registry_path.write_text(json.dumps(registry, indent=2) + "\n")
+
+    @staticmethod
+    def lookup_session(home: Path, agent_id: str) -> str | None:
+        """Look up a Claude session UUID by agent ID. Returns None if not found."""
+        registry_path = home / "logs" / "session-registry.json"
+        if not registry_path.exists():
+            return None
+        try:
+            registry = json.loads(registry_path.read_text())
+            entry = registry.get(agent_id)
+            return entry["session_uuid"] if entry else None
+        except (json.JSONDecodeError, OSError, KeyError):
+            return None
+
     def set_permission_hook(self, hook) -> None:
         """Register a PreToolUse hook for permission handling.
 
@@ -283,7 +327,8 @@ class AlephHarness:
         handoff_content = None
         recap_content = None
 
-        if not self.config.ephemeral and not self.config.continue_session:
+        is_resuming = self.config.continue_session or self.config.resume_session
+        if not self.config.ephemeral and not is_resuming:
             if handoff_file.exists():
                 handoff_content = handoff_file.read_text()
                 handoff_file.unlink()
@@ -362,6 +407,18 @@ class AlephHarness:
             cwd=cwd, env=env,
         )
 
+        # Resolve --resume agent ID to Claude session UUID
+        resume_uuid = None
+        if self.config.resume_session:
+            resume_uuid = self.lookup_session(
+                self.config.home, self.config.resume_session
+            )
+            if not resume_uuid:
+                raise RuntimeError(
+                    f"Cannot resume: no session found for agent '{self.config.resume_session}'. "
+                    f"Check ~/.aleph/logs/session-registry.json"
+                )
+
         return ClaudeAgentOptions(
             system_prompt=full_prompt,
             tools=tools,
@@ -374,6 +431,7 @@ class AlephHarness:
             permission_mode="bypassPermissions",
             include_partial_messages=True,
             continue_conversation=self.config.continue_session,
+            resume=resume_uuid,
         )
 
     async def start(self):

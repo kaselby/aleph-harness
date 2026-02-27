@@ -1,6 +1,7 @@
 """Aleph CLI entry point."""
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -8,7 +9,7 @@ import subprocess
 import sys
 import uuid
 
-from .config import AlephConfig
+from .config import ALEPH_HOME, AlephConfig
 from .harness import AlephHarness
 
 # Env var set inside the tmux session to prevent the inner aleph
@@ -59,9 +60,19 @@ def parse_args() -> argparse.Namespace:
         help="Continue the most recent session instead of starting fresh",
     )
     parser.add_argument(
+        "--resume",
+        metavar="AGENT_ID",
+        help="Resume a specific session by agent ID (e.g. aleph-ed2331a5)",
+    )
+    parser.add_argument(
         "--detach",
         action="store_true",
         help="Don't attach to the tmux session after launch",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List known sessions from the registry with their status",
     )
     return parser.parse_args()
 
@@ -83,6 +94,8 @@ def _build_inner_command(args: argparse.Namespace, agent_id: str) -> str:
         cmd_parts.append("--ephemeral")
     if args.continue_session:
         cmd_parts.append("--continue")
+    if args.resume:
+        cmd_parts += ["--resume", args.resume]
     return shlex.join(cmd_parts)
 
 
@@ -92,7 +105,7 @@ def _launch_in_tmux(args: argparse.Namespace) -> None:
         print("Error: tmux is not installed. Install it with: brew install tmux")
         sys.exit(1)
 
-    agent_id = args.id or f"aleph-{uuid.uuid4().hex[:8]}"
+    agent_id = args.resume or args.id or f"aleph-{uuid.uuid4().hex[:8]}"
     inner_cmd = _build_inner_command(args, agent_id)
 
     # Create the session detached, with the guard env var set
@@ -118,16 +131,62 @@ def _launch_in_tmux(args: argparse.Namespace) -> None:
             os.execvp("tmux", ["tmux", "attach", "-t", agent_id])
 
 
+def _list_sessions() -> None:
+    """Print known sessions from the registry, most recent first."""
+    registry_path = ALEPH_HOME / "logs" / "session-registry.json"
+    if not registry_path.exists():
+        print("No session registry found.")
+        return
+
+    try:
+        registry = json.loads(registry_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Error reading registry: {e}")
+        return
+
+    if not registry:
+        print("No sessions in registry.")
+        return
+
+    # Get running tmux sessions for status check
+    running = set()
+    result = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        running = set(result.stdout.strip().splitlines())
+
+    # Sort by started_at descending
+    entries = sorted(
+        registry.items(),
+        key=lambda kv: kv[1].get("started_at", ""),
+        reverse=True,
+    )
+
+    for agent_id, info in entries:
+        status = "\033[32mrunning\033[0m" if agent_id in running else "\033[90mdead\033[0m"
+        started = info.get("started_at", "?")[:19]  # trim to seconds
+        model = info.get("model") or "default"
+        print(f"  {agent_id:<24} {status:<20} {started}  {model}")
+
+
 def main():
     args = parse_args()
 
-    # If we're not already inside our tmux session, launch through tmux
-    if not os.environ.get(_TMUX_GUARD):
+    if args.list:
+        _list_sessions()
+        return
+
+    # If we're not already inside our tmux session, launch through tmux.
+    # Also bypass the guard when --detach is set — that means we're spawning
+    # a peer agent and always want a new tmux session, even from inside one.
+    if not os.environ.get(_TMUX_GUARD) or args.detach:
         _launch_in_tmux(args)
         return
 
     config = AlephConfig(
-        agent_id=args.id,
+        agent_id=args.resume or args.id,
         model=args.model,
         project=args.project,
         prompt=args.prompt,
@@ -135,6 +194,7 @@ def main():
         depth=args.depth,
         ephemeral=args.ephemeral,
         continue_session=args.continue_session,
+        resume_session=args.resume,
     )
 
     harness = AlephHarness(config)

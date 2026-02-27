@@ -51,6 +51,9 @@ class AlephConfig:
     # Continue the most recent session instead of starting fresh
     continue_session: bool = False
 
+    # Resume a specific session by agent ID
+    resume_session: str | None = None
+
     @property
     def system_prompt_path(self) -> Path:
         return self.home / "ALEPH.md"
