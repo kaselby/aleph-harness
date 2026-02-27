@@ -1,5 +1,6 @@
 """In-process MCP tools for the Aleph framework."""
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,6 +86,7 @@ class FileState:
 def create_aleph_mcp_server(
     inbox_root: Path,
     skills_path: Path,
+    agent_id: str,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     file_state: FileState | None = None,
@@ -99,6 +101,7 @@ def create_aleph_mcp_server(
     Args:
         inbox_root: Root inbox directory (e.g. ~/.aleph/inbox/).
         skills_path: Skills directory (e.g. ~/.aleph/skills/).
+        agent_id: This agent's ID (used for channel subscriptions).
         cwd: Initial working directory for the persistent shell.
         env: Environment variable overrides for the persistent shell.
         file_state: Shared FileState for Read/Edit/Write coordination.
@@ -537,58 +540,199 @@ def create_aleph_mcp_server(
         return {"content": [{"type": "text", "text": content}]}
 
     # ------------------------------------------------------------------
-    # send_message tool
+    # message tool (point-to-point + channels)
     # ------------------------------------------------------------------
 
-    @tool(
-        "send_message",
-        "Send a message to another agent's inbox. The message will be delivered "
-        "as a notification after their next tool call.",
-        {
-            "to": str,
-            "from": str,
-            "summary": str,
-            "body": str,
-            "priority": str,
-        },
-    )
-    async def send_message(args: dict) -> dict:
-        recipient = args["to"]
-        summary = args["summary"]
-        body = args["body"]
-        priority = args.get("priority", "normal")
-        sender = args.get("from", "unknown")
+    channels_path = inbox_root.parent / "channels.json"
 
+    def _read_channels() -> dict:
+        """Read the channel registry. Returns {channel_name: [agent_ids]}."""
+        if not channels_path.exists():
+            return {}
+        try:
+            return json.loads(channels_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def _write_channels(channels: dict) -> None:
+        """Write the channel registry with file locking."""
+        import fcntl
+        channels_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(channels_path, "a+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps(channels, indent=2) + "\n")
+
+    def _send_one(recipient: str, sender: str, summary: str, body: str,
+                  priority: str, channel: str | None = None) -> Path:
+        """Send a single message to a recipient's inbox. Returns the message path."""
+        import uuid as _uuid
         recipient_inbox = inbox_root / recipient
         recipient_inbox.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        import uuid as _uuid
         msg_id = f"msg-{timestamp}-{_uuid.uuid4().hex[:6]}"
         msg_path = recipient_inbox / f"{msg_id}.md"
 
+        channel_line = f"channel: {channel}\n" if channel else ""
         content = (
             f"---\n"
             f"from: {sender}\n"
             f"summary: \"{summary}\"\n"
             f"priority: {priority}\n"
+            f"{channel_line}"
             f"timestamp: {datetime.now(timezone.utc).isoformat()}\n"
             f"---\n\n"
             f"{body}\n"
         )
 
         msg_path.write_text(content)
+        return msg_path
 
-        return {
-            "content": [
-                {"type": "text", "text": f"Message sent to {recipient} at {msg_path}"}
-            ]
-        }
+    @tool(
+        "message",
+        "Send messages to agents and manage channel subscriptions.\n\n"
+        "Actions:\n"
+        "- **send**: Send a message to an agent (via `to`) or broadcast to a "
+        "channel (via `channel`). Requires `summary` and `body`.\n"
+        "- **subscribe**: Subscribe to a channel to receive all messages sent to it.\n"
+        "- **unsubscribe**: Unsubscribe from a channel.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "The action: send, subscribe, or unsubscribe",
+                    "enum": ["send", "subscribe", "unsubscribe"],
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Recipient agent ID (for action=send, point-to-point)",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Channel name (for subscribe/unsubscribe, or for action=send to broadcast)",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Brief summary shown in notifications (for action=send)",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Full message body (for action=send)",
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "Message priority: low, normal, or high (for action=send, default normal)",
+                    "enum": ["low", "normal", "high"],
+                },
+            },
+            "required": ["action"],
+        },
+    )
+    async def message_tool(args: dict) -> dict:
+        action = args.get("action")
+
+        if action == "subscribe":
+            channel = args.get("channel")
+            if not channel:
+                return _error("subscribe requires a channel name.")
+
+            import fcntl
+            channels_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(channels_path, "a+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.seek(0)
+                try:
+                    channels = json.loads(f.read() or "{}")
+                except json.JSONDecodeError:
+                    channels = {}
+
+                subs = channels.get(channel, [])
+                if agent_id in subs:
+                    return _ok(f"Already subscribed to channel '{channel}'.")
+                subs.append(agent_id)
+                channels[channel] = subs
+
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(channels, indent=2) + "\n")
+
+            return _ok(f"Subscribed to channel '{channel}'. {len(subs)} subscriber(s).")
+
+        elif action == "unsubscribe":
+            channel = args.get("channel")
+            if not channel:
+                return _error("unsubscribe requires a channel name.")
+
+            import fcntl
+            channels_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(channels_path, "a+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.seek(0)
+                try:
+                    channels = json.loads(f.read() or "{}")
+                except json.JSONDecodeError:
+                    channels = {}
+
+                subs = channels.get(channel, [])
+                if agent_id not in subs:
+                    return _ok(f"Not subscribed to channel '{channel}'.")
+                subs.remove(agent_id)
+                if subs:
+                    channels[channel] = subs
+                else:
+                    del channels[channel]
+
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(channels, indent=2) + "\n")
+
+            return _ok(f"Unsubscribed from channel '{channel}'.")
+
+        elif action == "send":
+            summary = args.get("summary", "")
+            body = args.get("body", "")
+            priority = args.get("priority", "normal")
+
+            if not summary and not body:
+                return _error("send requires at least a summary or body.")
+
+            to = args.get("to")
+            channel = args.get("channel")
+
+            if not to and not channel:
+                return _error("send requires either 'to' (agent ID) or 'channel'.")
+
+            # Point-to-point
+            if to:
+                msg_path = _send_one(to, agent_id, summary, body, priority)
+                return _ok(f"Message sent to {to} at {msg_path}")
+
+            # Channel broadcast
+            channels = _read_channels()
+            subs = channels.get(channel, [])
+            recipients = [s for s in subs if s != agent_id]
+
+            if not recipients:
+                return _error(f"Channel '{channel}' has no other subscribers.")
+
+            for recipient in recipients:
+                _send_one(recipient, agent_id, summary, body, priority, channel=channel)
+
+            return _ok(
+                f"Message broadcast to channel '{channel}' "
+                f"({len(recipients)} recipient(s))."
+            )
+
+        else:
+            return _error(f"Unknown action: {action}. Use send, subscribe, or unsubscribe.")
 
     server = create_sdk_mcp_server(
         name="aleph",
         version="0.2.0",
-        tools=[bash_tool, read_tool, edit_tool, write_tool, activate_skill, send_message],
+        tools=[bash_tool, read_tool, edit_tool, write_tool, activate_skill, message_tool],
     )
     return server, cleanup
 

@@ -215,6 +215,7 @@ class AlephHarness:
         self._model_verified = False
         self._permission_hook = None
         self._shell_cleanup = None
+        self._stderr_log: Path | None = None
         self.restart_requested = False
 
     @property
@@ -404,7 +405,7 @@ class AlephHarness:
         # allowed_tools is an additional execution-level whitelist (--allowedTools).
         # When ALLOWED_TOOLS is empty, all BASE_TOOLS are callable.
         tools = list(BASE_TOOLS)
-        allowed = list(ALLOWED_TOOLS) + ["mcp__aleph__send_message"] if ALLOWED_TOOLS else []
+        allowed = list(ALLOWED_TOOLS) + ["mcp__aleph__message"] if ALLOWED_TOOLS else []
 
         # Environment: disable Claude Code's auto-memory + pre-activate canonical venv
         venv_path = self.config.home / "venv"
@@ -422,6 +423,7 @@ class AlephHarness:
         # Build MCP server for framework tools (needs cwd + env + file_state)
         aleph_server, self._shell_cleanup = create_aleph_mcp_server(
             self.config.inbox_path, self.config.skills_path,
+            agent_id=self.agent_id,
             cwd=cwd, env=env, file_state=file_state,
         )
 

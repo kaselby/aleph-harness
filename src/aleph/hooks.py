@@ -35,10 +35,14 @@ def create_inbox_check_hook(inbox_path: Path):
                 if read_marker.exists():
                     continue
 
-                # Extract summary from frontmatter
-                summary = _extract_summary(msg_file)
-                if summary:
-                    summaries.append(f"[Message]: {summary} — Full message at {msg_file}")
+                # Extract summary and channel from frontmatter
+                parsed = parse_message(msg_file)
+                if parsed and parsed["summary"]:
+                    if parsed["channel"]:
+                        prefix = f"[Channel: {parsed['channel']}]"
+                    else:
+                        prefix = "[Message]"
+                    summaries.append(f"{prefix}: {parsed['summary']} — Full message at {msg_file}")
 
         if not summaries:
             return {}
@@ -348,6 +352,7 @@ def parse_message(msg_file: Path) -> dict | None:
         "from": "",
         "summary": "",
         "priority": "normal",
+        "channel": "",
         "body": "",
         "path": str(msg_file),
     }
@@ -378,6 +383,8 @@ def parse_message(msg_file: Path) -> dict | None:
             result["summary"] = line[len("summary:"):].strip().strip('"').strip("'")
         elif line.startswith("priority:"):
             result["priority"] = line[len("priority:"):].strip().strip('"').strip("'")
+        elif line.startswith("channel:"):
+            result["channel"] = line[len("channel:"):].strip().strip('"').strip("'")
 
     result["body"] = "\n".join(lines[fm_end + 1:]).strip()
     return result

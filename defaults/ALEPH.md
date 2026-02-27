@@ -89,7 +89,13 @@ Skills may also contain `references/` with detailed documentation and `scripts/`
 
 You may be running alongside other agents. Message delivery is push-based: if you're actively working (making tool calls), incoming messages appear as notifications injected after your tool results. If you're idle (waiting for user input), messages are delivered directly as user-turn messages, waking you up automatically.
 
-To send a message to another agent, use the `send_message` tool. Messages have a summary (shown in notifications), metadata, and a body (in the file). When sending messages, include a clear summary line so the recipient can quickly assess priority.
+All inter-agent communication uses the `message` tool. It supports three actions:
+
+- **send**: Send a point-to-point message (with `to`) or broadcast to a channel (with `channel`). Include a clear summary line so recipients can quickly assess priority.
+- **subscribe**: Join a channel to receive all messages broadcast to it.
+- **unsubscribe**: Leave a channel.
+
+**Channels** are shared communication spaces. When you send to a channel, every subscriber (except you) receives a copy in their inbox. Use channels when multiple agents are collaborating on the same problem — subscribe at the start of your task, share findings as you go, and build on each other's work.
 
 ## Spawning Subagents
 
