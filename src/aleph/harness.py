@@ -224,27 +224,37 @@ class AlephHarness:
         """Persist the agent_id → session_uuid mapping to the registry.
 
         Called as soon as the session UUID is captured from ResultMessage,
-        so the mapping survives crashes.
+        so the mapping survives crashes. Uses file locking to prevent
+        concurrent agents from clobbering each other's writes.
         """
+        import fcntl
+
         if not self.session_id:
             return
 
-        registry = {}
-        if self._registry_path.exists():
-            try:
-                registry = json.loads(self._registry_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        registry[self.agent_id] = {
-            "session_uuid": self.session_id,
-            "cwd": self.config.project or os.getcwd(),
-            "model": self.config.model,
-            "started_at": datetime.now().isoformat(),
-        }
-
         self._registry_path.parent.mkdir(parents=True, exist_ok=True)
-        self._registry_path.write_text(json.dumps(registry, indent=2) + "\n")
+
+        try:
+            with open(self._registry_path, "a+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.seek(0)
+                try:
+                    registry = json.loads(f.read() or "{}")
+                except json.JSONDecodeError:
+                    registry = {}
+
+                registry[self.agent_id] = {
+                    "session_uuid": self.session_id,
+                    "cwd": self.config.project or os.getcwd(),
+                    "model": self.config.model,
+                    "started_at": datetime.now().isoformat(),
+                }
+
+                f.seek(0)
+                f.truncate()
+                f.write(json.dumps(registry, indent=2) + "\n")
+        except OSError:
+            pass
 
     @staticmethod
     def lookup_session(home: Path, agent_id: str) -> str | None:
