@@ -40,6 +40,8 @@ def _compile_guardrails():
 
         # --- Confirm: destructive but sometimes legitimate ---
         (r"\bgit\s+push\b", "confirm", "git push"),
+        (r"\bgit\s+filter-branch\b", "confirm", "git filter-branch (rewrites history)"),
+        (r"\bgit\s+filter-repo\b", "confirm", "git filter-repo (rewrites history)"),
         (r"\bgit\s+reset\s+--hard\b", "confirm", "git reset --hard (discards changes)"),
         (r"\bgit\s+clean\b.*-\w*f", "confirm", "git clean (deletes untracked files)"),
         (r"\btmux\s+kill-(session|server)\b", "confirm", "kill tmux session/server"),
