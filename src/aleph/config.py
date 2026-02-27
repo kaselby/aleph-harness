@@ -10,8 +10,8 @@ ALEPH_HOME = Path.home() / ".aleph"
 BASE_TOOLS = [
     # "Bash" — replaced by custom MCP tool (mcp__aleph__Bash)
     "Read",
-    "Write",
-    "Edit",
+    # "Write" — replaced by MCP tool to avoid file-change notification bloat
+    # "Edit" — replaced by MCP tool to avoid file-change notification bloat
     "WebSearch",
     "WebFetch",
     # "TodoWrite" — not using built-in; planning via scratch files instead (see ALEPH.md)

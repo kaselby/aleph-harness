@@ -92,11 +92,16 @@ def create_skill_context_hook(skills_path: Path):
     return skill_context_hook
 
 
-def create_read_tracking_hook(inbox_path: Path):
-    """Create a PostToolUse hook (matcher="Read") that marks inbox messages as read.
+def create_read_tracking_hook(inbox_path: Path, file_state=None):
+    """Create a PostToolUse hook (matcher="Read") that:
 
-    When the agent reads a file inside its inbox directory, this hook creates a
-    .read marker file so the inbox check hook stops surfacing it.
+    1. Marks inbox messages as read (creates .read marker files).
+    2. Records file reads in the shared FileState so MCP Edit/Write can
+       enforce the "must read first" and "modified since read" validations.
+
+    Args:
+        inbox_path: The agent's inbox directory.
+        file_state: A FileState instance shared with the MCP Edit/Write tools.
     """
 
     async def read_tracking_hook(
@@ -109,6 +114,14 @@ def create_read_tracking_hook(inbox_path: Path):
             return {}
 
         file_path = Path(file_path_str)
+
+        # Record in shared file state (for MCP Edit/Write validation)
+        if file_state is not None:
+            has_offset = tool_input.get("offset") is not None
+            has_limit = tool_input.get("limit") is not None
+            file_state.record_read(
+                str(file_path), partial=(has_offset or has_limit)
+            )
 
         # Check if this file is inside the inbox directory
         try:

@@ -200,7 +200,7 @@ from .hooks import (
     create_skill_context_hook,
     create_usage_log_hook,
 )
-from .tools import create_aleph_mcp_server
+from .tools import FileState, create_aleph_mcp_server
 
 
 class AlephHarness:
@@ -370,9 +370,12 @@ class AlephHarness:
         inbox = self.config.agent_inbox(self.agent_id)
         inbox.mkdir(parents=True, exist_ok=True)
 
+        # Shared file state for MCP Edit/Write ↔ Read hook coordination
+        file_state = FileState()
+
         # Build hooks
         inbox_check = create_inbox_check_hook(inbox)
-        read_tracker = create_read_tracking_hook(inbox)
+        read_tracker = create_read_tracking_hook(inbox, file_state=file_state)
         reminder = create_reminder_hook(interval=25)
         skill_context = create_skill_context_hook(self.config.skills_path)
         usage_log = create_usage_log_hook(
@@ -406,6 +409,7 @@ class AlephHarness:
         venv_path = self.config.home / "venv"
         env = {
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING": "1",
             "ALEPH_HOME": str(self.config.home),
             "ALEPH_AGENT_ID": self.agent_id,
         }
@@ -414,10 +418,10 @@ class AlephHarness:
             env["VIRTUAL_ENV"] = str(venv_path)
             env["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
 
-        # Build MCP server for framework tools (needs cwd + env from above)
+        # Build MCP server for framework tools (needs cwd + env + file_state)
         aleph_server, self._shell_cleanup = create_aleph_mcp_server(
             self.config.inbox_path, self.config.skills_path,
-            cwd=cwd, env=env,
+            cwd=cwd, env=env, file_state=file_state,
         )
 
         # Resolve --resume agent ID to Claude session UUID
