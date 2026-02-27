@@ -39,7 +39,7 @@ def _compile_guardrails():
         (r"\bdd\b.*\bof\s*=\s*/dev/", "block", "write directly to raw device"),
 
         # --- Confirm: destructive but sometimes legitimate ---
-        (r"\bgit\s+push\b.*(-f\b|--force\b)", "confirm", "git force push"),
+        (r"\bgit\s+push\b", "confirm", "git push"),
         (r"\bgit\s+reset\s+--hard\b", "confirm", "git reset --hard (discards changes)"),
         (r"\bgit\s+clean\b.*-\w*f", "confirm", "git clean (deletes untracked files)"),
         (r"\btmux\s+kill-(session|server)\b", "confirm", "kill tmux session/server"),
