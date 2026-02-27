@@ -298,7 +298,7 @@ def create_usage_log_hook(logs_path: Path, agent_id: str, tools_bin: Path | None
             return {}
 
         # Custom tools (Bash calls to tools/bin/)
-        if tool_name == "Bash" and bin_prefix:
+        if tool_name in ("Bash", "mcp__aleph__Bash") and bin_prefix:
             command = tool_input.get("command", "")
             if bin_prefix in command:
                 try:
@@ -320,24 +320,59 @@ def create_usage_log_hook(logs_path: Path, agent_id: str, tools_bin: Path | None
     return usage_log_hook
 
 
-def _extract_summary(msg_file: Path) -> str | None:
-    """Extract the summary field from a message file's YAML frontmatter."""
+def parse_message(msg_file: Path) -> dict | None:
+    """Parse a message file into its components.
+
+    Returns a dict with keys: from, summary, priority, body, path.
+    Returns None if the file can't be read.
+    """
     try:
         text = msg_file.read_text()
     except OSError:
         return None
 
-    # Simple frontmatter parsing — look for summary: in YAML block
+    result = {
+        "from": "",
+        "summary": "",
+        "priority": "normal",
+        "body": "",
+        "path": str(msg_file),
+    }
+
     if not text.startswith("---"):
-        # No frontmatter, use first line as summary
+        # No frontmatter — treat entire content as body, first line as summary
         first_line = text.strip().split("\n")[0]
-        return first_line[:200] if first_line else None
+        result["summary"] = first_line[:200] if first_line else ""
+        result["body"] = text.strip()
+        return result
 
+    # Parse YAML frontmatter
     lines = text.split("\n")
-    for line in lines[1:]:
+    fm_end = None
+    for i, line in enumerate(lines[1:], 1):
         if line.strip() == "---":
+            fm_end = i
             break
-        if line.startswith("summary:"):
-            return line[len("summary:"):].strip().strip('"').strip("'")
 
-    return None
+    if fm_end is None:
+        result["body"] = text.strip()
+        return result
+
+    for line in lines[1:fm_end]:
+        if line.startswith("from:"):
+            result["from"] = line[len("from:"):].strip().strip('"').strip("'")
+        elif line.startswith("summary:"):
+            result["summary"] = line[len("summary:"):].strip().strip('"').strip("'")
+        elif line.startswith("priority:"):
+            result["priority"] = line[len("priority:"):].strip().strip('"').strip("'")
+
+    result["body"] = "\n".join(lines[fm_end + 1:]).strip()
+    return result
+
+
+def _extract_summary(msg_file: Path) -> str | None:
+    """Extract the summary field from a message file's YAML frontmatter."""
+    parsed = parse_message(msg_file)
+    if parsed is None:
+        return None
+    return parsed["summary"] or None

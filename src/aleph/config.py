@@ -8,7 +8,7 @@ ALEPH_HOME = Path.home() / ".aleph"
 # Base tool set — controls which tool schemas the model sees.
 # This is passed as --tools to the CLI and determines what's in the model's context.
 BASE_TOOLS = [
-    "Bash",
+    # "Bash" — replaced by custom MCP tool (mcp__aleph__Bash)
     "Read",
     "Write",
     "Edit",
@@ -46,6 +46,9 @@ class AlephConfig:
 
     # Ephemeral mode — skip handoffs, session recaps, and exit summary
     ephemeral: bool = False
+
+    # Continue the most recent session instead of starting fresh
+    continue_session: bool = False
 
     @property
     def system_prompt_path(self) -> Path:

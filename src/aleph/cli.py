@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Ephemeral session: skip handoffs, session recaps, and exit summary",
     )
+    parser.add_argument(
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Continue the most recent session instead of starting fresh",
+    )
     return parser.parse_args()
 
 
@@ -56,6 +62,7 @@ def main():
         parent=args.parent,
         depth=args.depth,
         ephemeral=args.ephemeral,
+        continue_session=args.continue_session,
     )
 
     harness = AlephHarness(config)

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from pathlib import Path
 from markdown_it import MarkdownIt
 
 from prompt_toolkit import Application
@@ -28,7 +30,7 @@ ANSI_SEQUENCES["\x1b[27;2;13~"] = Keys.F20    # xterm modifyOtherKeys format
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML, FormattedText
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout.containers import HSplit, Window
+from prompt_toolkit.layout.containers import ConditionalContainer, HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.layout import Layout
@@ -48,6 +50,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import StreamEvent
 
 from ..harness import AlephHarness
+from ..hooks import parse_message
 from ..permissions import (
     PermissionMode,
     PermissionRequest,
@@ -73,6 +76,8 @@ TUI_STYLE = Style.from_dict({
     "diff-add": "ansigreen",
     "diff-rm": "ansired",
     "diff-hunk": "ansicyan",
+    "agent-msg": "ansimagenta",
+    "agent-msg-b": "ansimagenta bold",
     "perm-prompt": "ansiyellow bold",
     "perm-key": "ansicyan bold",
     "mode-safe": "ansired bold",
@@ -306,7 +311,7 @@ def _fmt_tokens(n: int) -> str:
 def _format_tool_input(name: str, input: dict) -> str:
     """Format tool input for display, tailored per tool type."""
     match name:
-        case "Bash":
+        case "Bash" | "mcp__aleph__Bash":
             cmd = input.get("command", "")
             desc = input.get("description", "")
             lines = cmd.split("\n")
@@ -378,7 +383,7 @@ def _format_tool_result(name: str, content: str | list | None, is_error: bool | 
     match name:
         case "Read":
             summary = f"{len(lines)} lines"
-        case "Bash":
+        case "Bash" | "mcp__aleph__Bash":
             summary = "output:"
         case "Write":
             summary = f"wrote {len(text)} bytes"
@@ -422,12 +427,26 @@ class AlephApp:
         self._pending_permission: PermissionRequest | None = None
         self._app: Application | None = None
 
+        # Idle message delivery
+        self._auto_delivery_enabled = True
+        self._last_auto_delivery: float = 0.0
+        self._last_turn_source: str = "user"  # "user" or "agent"
+        self._watcher_task: asyncio.Task | None = None
+
         # Build the prompt_toolkit Application
         self._input_buffer = Buffer(multiline=True)
         kb = self._build_keybindings()
 
+        @Condition
+        def has_pending_permission():
+            return self._pending_permission is not None
+
         layout = Layout(
             HSplit([
+                ConditionalContainer(
+                    Window(FormattedTextControl(self._permission_bar), height=1),
+                    filter=has_pending_permission,
+                ),
                 Window(
                     BufferControl(buffer=self._input_buffer),
                     height=D(min=1, max=10),
@@ -575,12 +594,31 @@ class AlephApp:
         if self._context_tokens:
             parts.append(f"{_fmt_tokens(self._context_tokens)} / 200k")
 
-        if self._pending_permission:
-            parts.append("<perm-key>[y]</perm-key> accept  <perm-key>[n]</perm-key> reject")
-        elif self._receiving:
+        # Context budget warning
+        if self._context_tokens > 150_000:
+            parts.append("<err>\u26a0 auto-delivery paused</err>")
+
+        # Pending message count
+        if not self._receiving:
+            pending = self._pending_message_count()
+            if pending:
+                parts.append(f"\U0001f4e8 {pending} pending")
+
+        if self._receiving and not self._pending_permission:
             parts.append("Esc to interrupt")
 
         return HTML(f" {' | '.join(parts)}")
+
+    def _permission_bar(self) -> HTML:
+        """Build the ephemeral permission prompt that appears above the input."""
+        req = self._pending_permission
+        if not req:
+            return HTML("")
+        return HTML(
+            " <perm-prompt>Allow {tool}?</perm-prompt>"
+            "  <perm-key>[y]</perm-key> accept"
+            "  <perm-key>[n]</perm-key> reject".format(tool=req.tool_name)
+        )
 
     def run(self) -> None:
         """Run the TUI event loop."""
@@ -607,6 +645,9 @@ class AlephApp:
 
         try:
             with patch_stdout():
+                # Start inbox watcher for idle message delivery
+                self._watcher_task = asyncio.ensure_future(self._inbox_watcher())
+
                 # Auto-send initial prompt if provided (e.g. subagent launch)
                 initial_prompt = self._harness.config.prompt
                 if initial_prompt:
@@ -622,6 +663,13 @@ class AlephApp:
         except (KeyboardInterrupt, EOFError):
             pass
         finally:
+            # Cancel the inbox watcher
+            if self._watcher_task and not self._watcher_task.done():
+                self._watcher_task.cancel()
+                try:
+                    await self._watcher_task
+                except asyncio.CancelledError:
+                    pass
             # Bypass permissions for unattended exit tasks (summary, archival)
             self._perm_mode = PermissionMode.YOLO
             if not self._harness.config.ephemeral:
@@ -645,7 +693,7 @@ class AlephApp:
             _tprint("<dim>Disconnecting...</dim>")
             await self._harness.stop()
 
-    async def _send_and_receive(self, text: str) -> None:
+    async def _send_and_receive(self, text: str, source: str = "user") -> None:
         """Send a message and render the full response."""
         self._stream_chunks = []
         self._thinking_buffer = ""
@@ -674,6 +722,8 @@ class AlephApp:
         finally:
             self._receiving = False
             self._interrupt_in_flight = False
+            self._last_turn_source = source
+            self._last_auto_delivery = time.monotonic()
             if self._app:
                 self._app.invalidate()
 
@@ -711,6 +761,119 @@ class AlephApp:
         if self._receive_task and not self._receive_task.done():
             self._receive_task.cancel()
 
+    # ---- Idle message delivery ----
+
+    async def _inbox_watcher(self) -> None:
+        """Poll the inbox directory for unread messages while the agent is idle."""
+        inbox = self._harness.config.agent_inbox(self._harness.agent_id)
+        while True:
+            await asyncio.sleep(1.0)
+            if not self._should_deliver(inbox):
+                continue
+            msg = self._next_unread_message(inbox)
+            if msg:
+                await self._deliver_agent_message(msg)
+
+    def _should_deliver(self, inbox: Path) -> bool:
+        """Check whether conditions are met for auto-delivering a message."""
+        if not self._auto_delivery_enabled:
+            return False
+        if self._receiving:
+            return False
+        if self._pending_permission:
+            return False
+        # Don't inject while user is typing
+        if self._input_buffer.text:
+            return False
+        # Grace period: 2s after user turns, 1s minimum after agent turns.
+        # _last_auto_delivery is set at end of _send_and_receive (and may be
+        # shifted forward by _deliver_agent_message for adaptive cooldown).
+        elapsed = time.monotonic() - self._last_auto_delivery
+        min_wait = 2.0 if self._last_turn_source == "user" else 1.0
+        if elapsed < min_wait:
+            return False
+        # Context budget guard — pause at 75% of 200k
+        if self._context_tokens > 150_000:
+            return False
+        if not inbox.exists():
+            return False
+        return True
+
+    def _next_unread_message(self, inbox: Path) -> dict | None:
+        """Find the next unread message in the inbox, preferring high priority."""
+        if not inbox.exists():
+            return None
+
+        candidates = []
+        for msg_file in sorted(inbox.iterdir()):
+            if not msg_file.is_file() or msg_file.suffix != ".md":
+                continue
+            read_marker = msg_file.with_suffix(".read")
+            if read_marker.exists():
+                continue
+            parsed = parse_message(msg_file)
+            if parsed:
+                candidates.append(parsed)
+
+        if not candidates:
+            return None
+
+        # High priority first
+        for c in candidates:
+            if c["priority"] == "high":
+                return c
+        return candidates[0]
+
+    async def _deliver_agent_message(self, msg: dict) -> None:
+        """Format and inject an agent message as a user turn."""
+        # Mark as read before delivery
+        msg_path = Path(msg["path"])
+        msg_path.with_suffix(".read").touch()
+
+        sender = msg.get("from", "unknown")
+        summary = msg.get("summary", "")
+        body = msg.get("body", "")
+
+        # Print to scrollback with agent-message styling
+        _tprint("\n<agent-msg-b>\U0001f4e8 {}:</agent-msg-b>", sender)
+        if summary:
+            _tprint("<agent-msg>{}</agent-msg>", summary)
+        if body:
+            # Show body (truncated if very long)
+            display_body = body if len(body) < 2000 else body[:2000] + "\n... (truncated)"
+            _tprint("<agent-msg>{}</agent-msg>", display_body)
+
+        # Format for the model
+        formatted = f"[Message from {sender}]\n{body}"
+
+        # Compute adaptive cooldown based on body length
+        if len(body) < 200:
+            cooldown = 5.0
+        else:
+            cooldown = 1.0
+
+        self._receiving = True
+        if self._app:
+            self._app.invalidate()
+
+        await self._send_and_receive(formatted, source="agent")
+
+        # Apply cooldown — _last_auto_delivery is set in _send_and_receive's finally block,
+        # but we override with the cooldown-aware time here
+        self._last_auto_delivery = time.monotonic() + (cooldown - 1.0)
+
+    def _pending_message_count(self) -> int:
+        """Count unread messages in the inbox."""
+        inbox = self._harness.config.agent_inbox(self._harness.agent_id)
+        if not inbox.exists():
+            return 0
+        count = 0
+        for msg_file in inbox.iterdir():
+            if msg_file.is_file() and msg_file.suffix == ".md":
+                if not msg_file.with_suffix(".read").exists():
+                    count += 1
+        return count
+
     def _handle_sdk_message(self, msg: object) -> None:
         """Route an incoming SDK message to the appropriate handler."""
         if isinstance(msg, StreamEvent):
@@ -734,6 +897,13 @@ class AlephApp:
                 usage = event.get("usage", {})
                 if usage:
                     self._last_call_usage = usage
+                    self._context_tokens = (
+                        usage.get("input_tokens", 0)
+                        + usage.get("cache_read_input_tokens", 0)
+                        + usage.get("cache_creation_input_tokens", 0)
+                    )
+                    if self._app:
+                        self._app.invalidate()
 
         elif isinstance(msg, AssistantMessage):
             # Verify model on first response
@@ -827,9 +997,8 @@ class AlephApp:
                 else:
                     _tprint("<dim>    {}</dim>", line)
 
-        # Prominent accept/reject prompt
-        _tprint("")
-        _tprint("  <perm-prompt>Allow {}?</perm-prompt>  <perm-key>[y]</perm-key> accept  <perm-key>[n]</perm-key> reject", req.tool_name)
+        # The accept/reject prompt is rendered as an ephemeral layout element
+        # (_permission_bar) that disappears after the user responds.
 
     # ---- Rendering ----
 

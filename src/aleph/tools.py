@@ -5,14 +5,96 @@ from pathlib import Path
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from .shell import PersistentShell
 
-def create_aleph_mcp_server(inbox_root: Path, skills_path: Path):
+
+def create_aleph_mcp_server(
+    inbox_root: Path,
+    skills_path: Path,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+):
     """Create the Aleph MCP server with framework-specific tools.
+
+    Returns:
+        Tuple of (server, cleanup_coro_fn) where cleanup_coro_fn is an async
+        callable that shuts down the persistent shell. Call it before the
+        event loop closes.
 
     Args:
         inbox_root: Root inbox directory (e.g. ~/.aleph/inbox/).
         skills_path: Skills directory (e.g. ~/.aleph/skills/).
+        cwd: Initial working directory for the persistent shell.
+        env: Environment variable overrides for the persistent shell.
     """
+    # Lazily initialized on first Bash call
+    shell: PersistentShell | None = None
+
+    async def cleanup():
+        nonlocal shell
+        if shell is not None:
+            await shell.close()
+            shell = None
+
+    @tool(
+        "Bash",
+        "Executes a bash command in a persistent shell. Environment variables, "
+        "working directory, and other state persist between calls.",
+        {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The command to execute",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Brief description of what the command does",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in milliseconds (default 120000)",
+                },
+            },
+            "required": ["command"],
+        },
+    )
+    async def bash_tool(args: dict) -> dict:
+        nonlocal shell
+        if shell is None:
+            shell = PersistentShell(cwd=cwd, env=env)
+
+        command = args.get("command", "")
+        timeout_ms = args.get("timeout", 120_000)
+
+        if not command.strip():
+            return {
+                "content": [{"type": "text", "text": "Error: no command provided."}],
+                "isError": True,
+            }
+
+        result = await shell.run(command, timeout_ms=timeout_ms)
+
+        # Format output to include metadata
+        parts = []
+        if result["output"].strip():
+            parts.append(result["output"].rstrip())
+
+        # Status line
+        status = []
+        if result["timed_out"]:
+            status.append(f"TIMED OUT after {result['elapsed_ms']}ms")
+        elif result["exit_code"] != 0:
+            status.append(f"Exit code: {result['exit_code']}")
+        if result["elapsed_ms"] >= 1000:
+            status.append(f"{result['elapsed_ms']}ms")
+        status.append(f"cwd: {result['cwd']}")
+
+        footer = f"[{result['timestamp']}] {' | '.join(status)}"
+        parts.append(footer)
+
+        text = "\n".join(parts)
+        return {"content": [{"type": "text", "text": text}]}
 
     @tool(
         "activate_skill",
@@ -84,8 +166,9 @@ def create_aleph_mcp_server(inbox_root: Path, skills_path: Path):
             ]
         }
 
-    return create_sdk_mcp_server(
+    server = create_sdk_mcp_server(
         name="aleph",
         version="0.1.0",
-        tools=[activate_skill, send_message],
+        tools=[bash_tool, activate_skill, send_message],
     )
+    return server, cleanup

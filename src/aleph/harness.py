@@ -106,6 +106,7 @@ class AlephHarness:
         self._expected_model = _resolve_model(config.model)
         self._model_verified = False
         self._permission_hook = None
+        self._shell_cleanup = None
 
     def set_permission_hook(self, hook) -> None:
         """Register a PreToolUse hook for permission handling.
@@ -160,13 +161,16 @@ class AlephHarness:
             ctx += "\n\n---\n## Memory Context\n\n"
             ctx += context_file.read_text()
 
-        # Inject handoff and session recap (skip in ephemeral mode)
+        # Inject handoff and session recap (skip in ephemeral mode).
+        # On --continue, skip both: the conversation history already has whatever
+        # context the original session had, and handoff consumption is destructive
+        # (we'd eat a file meant for a future fresh session).
         handoff_file = self.config.memory_path / "handoff.md"
         sessions_path = self.config.memory_path / "sessions"
         handoff_content = None
         recap_content = None
 
-        if not self.config.ephemeral:
+        if not self.config.ephemeral and not self.config.continue_session:
             if handoff_file.exists():
                 handoff_content = handoff_file.read_text()
                 handoff_file.unlink()
@@ -221,17 +225,11 @@ class AlephHarness:
                 HookMatcher(matcher=None, hooks=[self._permission_hook]),
             ]
 
-        # Build MCP server for framework tools
-        aleph_server = create_aleph_mcp_server(self.config.inbox_path, self.config.skills_path)
-
         # tools controls which tool schemas the model sees (--tools flag).
         # allowed_tools is an additional execution-level whitelist (--allowedTools).
         # When ALLOWED_TOOLS is empty, all BASE_TOOLS are callable.
         tools = list(BASE_TOOLS)
         allowed = list(ALLOWED_TOOLS) + ["mcp__aleph__send_message"] if ALLOWED_TOOLS else []
-
-        # Set working directory
-        cwd = self.config.project or os.getcwd()
 
         # Environment: disable Claude Code's auto-memory + pre-activate canonical venv
         venv_path = self.config.home / "venv"
@@ -245,6 +243,12 @@ class AlephHarness:
             env["VIRTUAL_ENV"] = str(venv_path)
             env["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
 
+        # Build MCP server for framework tools (needs cwd + env from above)
+        aleph_server, self._shell_cleanup = create_aleph_mcp_server(
+            self.config.inbox_path, self.config.skills_path,
+            cwd=cwd, env=env,
+        )
+
         return ClaudeAgentOptions(
             system_prompt=full_prompt,
             tools=tools,
@@ -256,6 +260,7 @@ class AlephHarness:
             env=env,
             permission_mode="bypassPermissions",
             include_partial_messages=True,
+            continue_conversation=self.config.continue_session,
         )
 
     async def start(self):
@@ -314,6 +319,9 @@ class AlephHarness:
 
     async def force_stop(self):
         """Force-kill the CLI subprocess. Use when interrupt doesn't work."""
+        if self._shell_cleanup:
+            await self._shell_cleanup()
+            self._shell_cleanup = None
         if self._client:
             await self._client.disconnect()
             self._client = None
@@ -441,6 +449,11 @@ class AlephHarness:
 
     async def stop(self):
         """Disconnect the agent session."""
+        # Clean up persistent shell before disconnecting (avoids
+        # "Event loop is closed" errors from orphaned subprocess transports)
+        if self._shell_cleanup:
+            await self._shell_cleanup()
+            self._shell_cleanup = None
         if self._client:
             await self._client.disconnect()
             self._client = None

@@ -27,7 +27,7 @@ def needs_permission(mode: PermissionMode, tool_name: str) -> bool:
         return False
     if tool_name in ("Edit", "Write"):
         return True  # Edit/Write gated in both safe and default
-    if tool_name == "Bash" and mode == PermissionMode.SAFE:
+    if tool_name in ("Bash", "mcp__aleph__Bash") and mode == PermissionMode.SAFE:
         return True
     return False
 
@@ -53,7 +53,7 @@ def generate_diff(tool_name: str, tool_input: dict[str, Any]) -> str:
         return _diff_edit(tool_input)
     elif tool_name == "Write":
         return _diff_write(tool_input)
-    elif tool_name == "Bash":
+    elif tool_name in ("Bash", "mcp__aleph__Bash"):
         return _preview_bash(tool_input)
     return ""
 
