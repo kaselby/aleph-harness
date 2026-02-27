@@ -749,6 +749,13 @@ class AlephApp:
             self._interrupt_in_flight = False
             self._last_turn_source = source
             self._last_auto_delivery = time.monotonic()
+
+            # Check if the agent requested a session exit (exit_session tool)
+            sc = self._harness.session_control
+            if sc and sc.quit_requested and self._app:
+                self._app.exit()
+                return
+
             if self._app:
                 self._app.invalidate()
 

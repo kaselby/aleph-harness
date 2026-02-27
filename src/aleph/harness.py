@@ -200,7 +200,7 @@ from .hooks import (
     create_skill_context_hook,
     create_usage_log_hook,
 )
-from .tools import FileState, create_aleph_mcp_server
+from .tools import FileState, SessionControl, create_aleph_mcp_server
 
 
 class AlephHarness:
@@ -216,6 +216,7 @@ class AlephHarness:
         self._permission_hook = None
         self._shell_cleanup = None
         self._stderr_log: Path | None = None
+        self.session_control: SessionControl | None = None
         self._stderr_fh = None
         self.restart_requested = False
 
@@ -426,10 +427,12 @@ class AlephHarness:
             env["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
 
         # Build MCP server for framework tools (needs cwd + env + file_state)
+        self.session_control = SessionControl(ephemeral=self.config.ephemeral)
         aleph_server, self._shell_cleanup = create_aleph_mcp_server(
             self.config.inbox_path, self.config.skills_path,
             agent_id=self.agent_id,
             cwd=cwd, env=env, file_state=file_state,
+            session_control=self.session_control,
         )
 
         # Resolve --resume agent ID to Claude session UUID + original cwd

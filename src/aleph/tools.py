@@ -83,6 +83,14 @@ class FileState:
 # MCP server factory
 # ---------------------------------------------------------------------------
 
+class SessionControl:
+    """Shared state for session lifecycle signals between MCP tools and the TUI."""
+
+    def __init__(self, *, ephemeral: bool = False):
+        self.ephemeral = ephemeral
+        self.quit_requested = False
+
+
 def create_aleph_mcp_server(
     inbox_root: Path,
     skills_path: Path,
@@ -90,6 +98,7 @@ def create_aleph_mcp_server(
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     file_state: FileState | None = None,
+    session_control: SessionControl | None = None,
 ):
     """Create the Aleph MCP server with framework-specific tools.
 
@@ -105,6 +114,7 @@ def create_aleph_mcp_server(
         cwd: Initial working directory for the persistent shell.
         env: Environment variable overrides for the persistent shell.
         file_state: Shared FileState for Read/Edit/Write coordination.
+        session_control: Shared session lifecycle state (for exit_session tool).
     """
     if file_state is None:
         file_state = FileState()
@@ -729,10 +739,39 @@ def create_aleph_mcp_server(
         else:
             return _error(f"Unknown action: {action}. Use send, subscribe, or unsubscribe.")
 
+    # ------------------------------------------------------------------
+    # exit_session tool (ephemeral agents only)
+    # ------------------------------------------------------------------
+
+    @tool(
+        "exit_session",
+        "Exit the current session cleanly. Only available for ephemeral (spawned) "
+        "agents that have completed their task. Call this when your work is done "
+        "and you have nothing left to do. Do NOT call this in interactive sessions "
+        "with a user.",
+        {
+            "type": "object",
+            "properties": {},
+        },
+    )
+    async def exit_session_tool(args: dict) -> dict:
+        if session_control is None or not session_control.ephemeral:
+            return _error(
+                "exit_session is only available in ephemeral mode. "
+                "Interactive sessions should be ended by the user."
+            )
+
+        session_control.quit_requested = True
+        return _ok(
+            "Session exit requested. Stop making tool calls — "
+            "the session will end after this turn completes."
+        )
+
     server = create_sdk_mcp_server(
         name="aleph",
         version="0.2.0",
-        tools=[bash_tool, read_tool, edit_tool, write_tool, activate_skill, message_tool],
+        tools=[bash_tool, read_tool, edit_tool, write_tool, activate_skill,
+               message_tool, exit_session_tool],
     )
     return server, cleanup
 
