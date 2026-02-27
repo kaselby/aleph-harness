@@ -83,6 +83,7 @@ TUI_STYLE = Style.from_dict({
     "mode-safe": "ansired bold",
     "mode-default": "ansiyellow bold",
     "mode-yolo": "ansigreen bold",
+    "danger": "ansired bold",
 })
 
 
@@ -536,6 +537,10 @@ class AlephApp:
             app_ref._input_buffer.reset()
 
             if text == "/exit":
+                event.app.exit()
+                return
+            if text == "/restart":
+                app_ref._harness.restart_requested = True
                 event.app.exit()
                 return
             if text == "/fquit":
@@ -1011,8 +1016,11 @@ class AlephApp:
         if req.diff_text:
             _tprint("")
             for line in req.diff_text.splitlines():
+                # Guardrail warning
+                if line.startswith("DANGEROUS:"):
+                    _tprint("<danger>    \u26a0 {}</danger>", line)
                 # Unified diff coloring
-                if line.startswith("+++") or line.startswith("---"):
+                elif line.startswith("+++") or line.startswith("---"):
                     _tprint("<dim>    {}</dim>", line)
                 elif line.startswith("+"):
                     _tprint("<diff-add>    {}</diff-add>", line)

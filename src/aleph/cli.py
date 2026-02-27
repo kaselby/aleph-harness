@@ -204,6 +204,13 @@ def main():
     app = AlephApp(harness)
     app.run()
 
+    if harness.restart_requested:
+        # Replace this process with a fresh aleph invocation.
+        # Clean shutdown (summary, archive, commit) already happened in app.run().
+        # exec replaces the entire process image — clean slate, modules reloaded from disk.
+        aleph_bin = shutil.which("aleph") or sys.argv[0]
+        os.execvp(aleph_bin, [aleph_bin])
+
 
 if __name__ == "__main__":
     main()

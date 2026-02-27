@@ -215,6 +215,7 @@ class AlephHarness:
         self._model_verified = False
         self._permission_hook = None
         self._shell_cleanup = None
+        self.restart_requested = False
 
     @property
     def _registry_path(self) -> Path:
