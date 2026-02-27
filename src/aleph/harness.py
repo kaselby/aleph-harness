@@ -432,17 +432,22 @@ class AlephHarness:
             cwd=cwd, env=env, file_state=file_state,
         )
 
-        # Resolve --resume agent ID to Claude session UUID
+        # Resolve --resume agent ID to Claude session UUID + original cwd
         resume_uuid = None
         if self.config.resume_session:
-            resume_uuid = self.lookup_session(
+            entry = self.lookup_session(
                 self.config.home, self.config.resume_session
             )
-            if not resume_uuid:
+            if not entry:
                 raise RuntimeError(
                     f"Cannot resume: no session found for agent '{self.config.resume_session}'. "
                     f"Check ~/.aleph/logs/session-registry.json"
                 )
+            resume_uuid = entry["session_uuid"]
+            # Claude Code keys conversations to the project directory, so we
+            # must use the original cwd or it won't find the conversation.
+            if entry.get("cwd"):
+                cwd = entry["cwd"]
 
         # Set up stderr logging — captures Claude CLI error output to a file
         # so we can diagnose crashes after the fact.
