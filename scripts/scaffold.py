@@ -105,14 +105,6 @@ def scaffold():
         else:
             print(f"  Skipped {f} (already exists)")
 
-    # Create empty tools/REGISTRY.md if it doesn't exist
-    registry = ALEPH_HOME / "tools" / "REGISTRY.md"
-    if registry.exists():
-        print(f"  Skipped {registry} (already exists)")
-    else:
-        registry.write_text("")
-        print(f"  Created {registry}")
-
     # Deploy tool framework via symlinks.
     # lib/ is symlinked as a whole directory — it's entirely harness infrastructure.
     # bin/ and definitions/ are agent-owned; scaffold just ensures they exist.

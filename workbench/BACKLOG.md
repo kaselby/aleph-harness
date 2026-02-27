@@ -39,10 +39,8 @@ Multiple agents writing to shared files (todo.yaml, memory.md) will eventually c
 
 **Revisit when:** Running multi-agent swarms against shared state.
 
-### Persistent Bash tool (self-improvement candidate)
-Claude Code's built-in Bash tool resets shell state between invocations — env vars, venv activations, aliases all gone. Working directory persists, nothing else. For v1 we pre-set the venv PATH/VIRTUAL_ENV in the SDK env dict, which covers the main case. But since Bash is the foundation of everything Aleph does, a custom MCP Bash tool with a persistent shell (via pty/pexpect) may be needed. Good candidate for Aleph's first self-improvement project — let it discover the friction and build its own fix.
-
-**Revisit when:** Aleph encounters friction from stateless Bash, or as a deliberate self-improvement exercise.
+### ~~Persistent Bash tool~~ RESOLVED
+Built as custom MCP tool (`mcp__aleph__Bash`). Persistent shell subprocess with sentinel-based output capture. Replaces built-in Bash via `disallowed_tools`. See `src/aleph/shell.py`, `tools.py`.
 
 ### ~~allowed_tools behavior~~ RESOLVED
 `allowed_tools` (--allowedTools) gates execution only, not schema visibility. The `tools` parameter (--tools) controls which tool schemas the model sees. Both are independent of `bypassPermissions`. Fix applied: harness now sets `tools=BASE_TOOLS`. See diagnostic results in `~/.aleph/scratch/context-dump.md`.
@@ -71,6 +69,11 @@ The `~/.aleph` repo auto-commits locally at session end but doesn't push to the 
 Also deferred: **per-agent git worktrees** — each running agent gets its own worktree/branch, merges to main at session end. Eliminates index lock contention entirely but requires significant plumbing (redirect `config.home`, handle merge conflicts, maintain inter-agent visibility). Worth revisiting if concurrent write contention becomes a real problem.
 
 **Revisit when:** Multiple agents are regularly causing git lock contention, or when building the manager daemon.
+
+### `run_in_background` for MCP Bash tool
+The custom MCP Bash tool doesn't support background execution. The built-in Bash tool had a `run_in_background` parameter; our MCP equivalent should support something similar. Implementation: spawn the command in a background subshell within the persistent shell, return immediately with a job ID, provide a way to check on / retrieve output later.
+
+**Revisit when:** A real task needs long-running background commands (builds, servers, watchers).
 
 ## Future Ideas
 

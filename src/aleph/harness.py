@@ -44,6 +44,110 @@ KNOWLEDGE_CUTOFFS = {
 }
 
 
+def _discover_tools(tools_path) -> list[dict]:
+    """Scan the tools directory for standalone scripts and managed tool definitions.
+
+    Standalone scripts: files in tools_path with a ``# ---`` YAML comment header
+    containing ``name`` and ``description`` fields.
+
+    Managed tools: Python modules in tools_path/definitions/ with a ``meta`` dict
+    containing ``name``, ``description``, and optionally ``cost_per_call``.
+    """
+    tools = []
+    if not tools_path.exists():
+        return tools
+
+    # --- Standalone scripts (top-level executable files with comment headers) ---
+    for path in sorted(tools_path.iterdir()):
+        if path.is_dir() or path.name.startswith("."):
+            continue
+        if not os.access(path, os.X_OK) and path.suffix != ".py":
+            continue
+        try:
+            text = path.read_text()
+        except Exception:
+            continue
+        # Look for # --- header block
+        header = _parse_tool_header(text)
+        if header and "name" in header:
+            tools.append({
+                "name": header["name"],
+                "description": header.get("description", ""),
+                "arguments": header.get("arguments", ""),
+            })
+
+    # --- Managed tools (definitions/*.py with meta dict) ---
+    defs_dir = tools_path / "definitions"
+    if defs_dir.exists():
+        for path in sorted(defs_dir.glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            try:
+                # Parse meta dict without importing the module (avoid side effects)
+                meta = _parse_meta_from_source(path)
+                if meta and "name" in meta:
+                    entry = {
+                        "name": meta["name"],
+                        "description": meta.get("description", ""),
+                    }
+                    cost = meta.get("cost_per_call", 0)
+                    if cost:
+                        entry["cost"] = cost
+                    tools.append(entry)
+            except Exception:
+                continue
+
+    return tools
+
+
+def _parse_tool_header(text: str) -> dict | None:
+    """Extract YAML fields from a ``# ---`` comment header block."""
+    lines = text.split("\n")
+    in_header = False
+    header_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "# ---":
+            if in_header:
+                break  # closing delimiter
+            in_header = True
+            continue
+        if in_header:
+            if stripped.startswith("# "):
+                header_lines.append(stripped[2:])
+            else:
+                break  # non-comment line inside header = malformed, stop
+    if not header_lines:
+        return None
+    try:
+        return yaml.safe_load("\n".join(header_lines))
+    except Exception:
+        return None
+
+
+def _parse_meta_from_source(path) -> dict | None:
+    """Extract a ``meta = {...}`` dict from a Python source file without importing it.
+
+    Uses ast to safely parse the assignment.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(path.read_text())
+    except SyntaxError:
+        return None
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "meta":
+                    try:
+                        return ast.literal_eval(node.value)
+                    except (ValueError, TypeError):
+                        return None
+    return None
+
+
 def _discover_skills(skills_path) -> list[dict]:
     """Scan the skills directory and extract name + description from SKILL.md frontmatter."""
     skills = []
@@ -144,6 +248,15 @@ class AlephHarness:
         ctx += f"Platform: {platform.system()} {platform.release()}\n"
         ctx += f"Shell: {os.environ.get('SHELL', 'unknown')}\n"
         ctx += f"Working directory: {cwd}\n"
+
+        # Discover custom tools
+        custom_tools = _discover_tools(self.config.tools_path)
+        if custom_tools:
+            ctx += "\nCustom tools (invoke via Bash):\n"
+            for t in custom_tools:
+                cost_tag = f" **[${t['cost']}/call]**" if t.get("cost") else ""
+                args = f" `{t['arguments']}`" if t.get("arguments") else ""
+                ctx += f"- **{t['name']}**{args} — {t['description']}{cost_tag}\n"
 
         # Discover available skills
         skills = _discover_skills(self.config.skills_path)

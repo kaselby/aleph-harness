@@ -14,6 +14,7 @@ BASE_TOOLS = [
     "Edit",
     "WebSearch",
     "WebFetch",
+    # "TodoWrite" — not using built-in; planning via scratch files instead (see ALEPH.md)
 ]
 
 # Execution-level whitelist — controls which tools the model can actually call.
