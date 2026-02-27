@@ -54,10 +54,25 @@ message(action="unsubscribe", channel="exploration")     # leave when done
 
 Use channels when you're collaborating with other agents on the same problem. Subscribe at the start of your task, share findings as you discover them, and build on what others report. Channel messages arrive in your inbox just like direct messages — the `channel` field in the frontmatter tells you where it came from.
 
+## Task Coordination
+
+Use the `task` tool for all TODO.yml operations — it handles file locking to prevent concurrent edit conflicts between agents.
+
+```bash
+task list                          # show all tasks with status
+task claim 2.1                     # claim a task (sets assignee + in-progress)
+task status 2.1 done               # update status (open/in-progress/done/blocked)
+task release 2.1                   # release a claimed task
+```
+
+The tool uses `ALEPH_AGENT_ID` (set automatically by the harness) as the assignee. If another agent has already claimed a task, the claim will fail with an error — no silent overwrites.
+
+If the project has no TODO.yml, use messages for task assignment instead.
+
 ## Protocol
 
 1. **Use messages to coordinate.** Send task assignments, status updates, and results via the `message` tool. For group work, use channels so everyone stays informed without explicit routing.
 
-2. **Use TODO.yml to claim tasks.** Set your agent ID as assignee and status to `claimed` before starting work. This prevents two agents from working on the same task.
+2. **Use the `task` tool to claim tasks.** Run `task claim <id>` before starting work. This atomically sets your agent ID as assignee and prevents two agents from working on the same task.
 
-3. **Continuously update TODO.yml with progress.** Update task status as you work (`in_progress`, `blocked`, `done`). Other agents and the user rely on this to understand the state of work.
+3. **Update task status as you work.** Run `task status <id> done` (or `blocked`, etc.) so other agents and the user can see progress.
