@@ -112,6 +112,34 @@ Open questions: how to define "project directory" for TODO.yml detection when th
 
 **Revisit when:** Building context-aware reminders, or when the hook system needs more sophistication generally.
 
+### Session resume: system prompt identity on resume
+When resuming a session with `--resume <agent-id>`, the CLI ignores the new system prompt we pass and reuses the stored one from the conversation history. This means the agent ID in the session context shows the previous session's ID, not the one being resumed. The env var (`ALEPH_AGENT_ID`) and inbox routing are correct — only the system prompt identity is stale.
+
+Root cause: the Claude CLI's `--resume` loads the full conversation including its original system prompt, discarding the `--system-prompt` argument. Confirmed: the SDK does pass both `--system-prompt` and `--resume` to the CLI, but the CLI ignores the former on resume.
+
+Potential fixes:
+- **`fork_session=True`**: Creates a new session branched from the old conversation. Might accept the new system prompt since it's technically a new session. Side effects: old UUID becomes stale (registry needs updating with the new UUID from the fork), session file proliferation in `.claude/projects/`. Need to test whether fork actually accepts the new system prompt before implementing.
+- **Inject identity via first user message**: Instead of relying on the system prompt, prepend an identity correction message ("You are now agent X, your inbox is Y") to the first user turn after resume. Simpler, but clutters the conversation.
+- **Accept the limitation**: The identity mismatch is cosmetic — functional identity (env, inbox, tmux session name) is all correct. The model can check `$ALEPH_AGENT_ID` if it needs to confirm its identity.
+
+Currently taking option 3 (accept). Upgrade to fork if the identity confusion causes real problems.
+
+**Revisit when:** The stale identity causes actual bugs (e.g. agent sends messages with wrong `from` ID, or writes session summary with wrong agent ID).
+
+### Guardrail false positives on command names in strings
+The guardrail regex patterns in `permissions.py` match anywhere in the Bash command string, including inside quoted strings, heredocs, git commit messages, and tool arguments. For example, mentioning a blocked command name in a `git commit -m` message or a `memory-append` call triggers the block.
+
+Root cause: `classify_danger()` runs regexes against the entire command string without distinguishing between command position and argument position. A word like "format-filesystem" in a commit message matches `\bmkfs\b`... wait, no — the actual trigger was the literal word appearing in prose. The `\b` word boundary helps but doesn't prevent matching inside quoted arguments.
+
+Fix approaches (in order of complexity):
+1. **Shell-parse first**: Use `shlex.split()` or a simple heuristic to extract just the command(s) from the string (split on `;`, `&&`, `||`, `|`, then take the first word of each segment). Only match patterns against those command words.
+2. **Exclude quoted content**: Strip single-quoted and double-quoted strings before matching. Handles the commit message case but not heredocs or complex quoting.
+3. **Smarter regex anchoring**: Require patterns to appear at command position — after `^`, `;`, `&&`, `||`, `|`, `\n`, or `$()`. This is fragile with complex shell syntax but handles 90% of cases.
+
+Option 1 is cleanest. `shlex.split()` handles most quoting correctly. The tricky part is multi-command strings (`cmd1 && cmd2`), but splitting on shell operators before shlex handles that.
+
+**Revisit when:** False positives become actively disruptive. Currently workable by rewording strings to avoid trigger words.
+
 ### Runtime agent renaming
 Allow agents to rename themselves at runtime to reflect what they're working on (visible in `tmux list-sessions`). Challenge: agent ID is used for inbox routing, tmux session name, session summaries, and message `from` fields — all need to stay in sync. Would require an MCP tool that atomically updates harness internal state, renames the inbox directory, and renames the tmux session. For now, use meaningful `--id` values at launch.
 
