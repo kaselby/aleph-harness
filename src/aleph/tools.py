@@ -16,10 +16,10 @@ from .shell import PersistentShell
 class FileState:
     """Track which files have been read and their state at read time.
 
-    This replaces Claude Code's internal readFileState for our MCP Edit/Write
-    tools. The built-in Read tool's PostToolUse hook populates this, and
-    Edit/Write check it for the "must read first" and "modified since read"
-    validations.
+    This replaces Claude Code's internal readFileState for our MCP tools.
+    Populated by: MCP Read (directly) and built-in Read PostToolUse hook.
+    Consumed by: MCP Edit and MCP Write for "must read first" and
+    "modified since read" validations.
     """
 
     def __init__(self):
@@ -178,6 +178,136 @@ def create_aleph_mcp_server(
 
         text = "\n".join(parts)
         return {"content": [{"type": "text", "text": text}]}
+
+    # ------------------------------------------------------------------
+    # Read tool (MCP replacement for built-in, text files only)
+    # ------------------------------------------------------------------
+
+    MAX_LINES = 2000
+    MAX_LINE_LEN = 2000
+
+    @tool(
+        "Read",
+        "Reads a file from the local filesystem. Use this tool by default for "
+        "reading all text files.\n\n"
+        "Usage:\n"
+        "- The file_path parameter must be an absolute path, not a relative path\n"
+        "- By default, it reads up to 2000 lines starting from the beginning "
+        "of the file\n"
+        "- You can optionally specify a line offset and limit (especially handy "
+        "for long files), but it's recommended to read the whole file by not "
+        "providing these parameters\n"
+        "- Any lines longer than 2000 characters will be truncated\n"
+        "- Results are returned using cat -n format, with line numbers starting at 1\n"
+        "- For reading images (PNG, JPG, etc.), PDFs, or Jupyter notebooks, use "
+        "the built-in Read tool instead.",
+        {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "The absolute path to the file to read",
+                },
+                "offset": {
+                    "type": "number",
+                    "description": (
+                        "The line number to start reading from. "
+                        "Only provide if the file is too large to read at once"
+                    ),
+                },
+                "limit": {
+                    "type": "number",
+                    "description": (
+                        "The number of lines to read. "
+                        "Only provide if the file is too large to read at once."
+                    ),
+                },
+            },
+            "required": ["file_path"],
+        },
+    )
+    async def read_tool(args: dict) -> dict:
+        file_path = args.get("file_path", "")
+        offset = args.get("offset")
+        limit = args.get("limit")
+
+        if not file_path:
+            return _error("No file_path provided.")
+
+        normalized = str(Path(file_path).resolve())
+
+        if not os.path.exists(normalized):
+            return _error(f"File does not exist: {file_path}")
+
+        if os.path.isdir(normalized):
+            return _error(
+                f"{file_path} is a directory, not a file. Use Bash with ls "
+                "to list directory contents."
+            )
+
+        # Reject binary files
+        ext = Path(normalized).suffix.lower().lstrip(".")
+        if ext in _BINARY_EXTENSIONS:
+            return _error(
+                f"This tool cannot read binary files. The file appears to be "
+                f"a binary .{ext} file. Please use appropriate tools for "
+                f"binary file analysis."
+            )
+
+        # For images/PDFs/notebooks, tell model to use built-in Read
+        if ext in _MEDIA_EXTENSIONS:
+            return _error(
+                f"This tool handles text files only. For .{ext} files, use "
+                f"the built-in Read tool instead."
+            )
+
+        # Read the file
+        try:
+            raw = Path(normalized).read_text(errors="replace")
+        except OSError as e:
+            return _error(f"Failed to read file: {e}")
+
+        lines = raw.split("\n")
+        # Remove trailing empty string from split if file ends with newline
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+
+        total_lines = len(lines)
+
+        # Handle empty file
+        if total_lines == 0:
+            file_state.record_read(normalized, partial=False)
+            return _ok(
+                "<system-reminder>Warning: the file exists but the contents "
+                "are empty.</system-reminder>"
+            )
+
+        # Apply offset (1-indexed) and limit
+        start = max(1, int(offset)) if offset is not None else 1
+        max_lines = int(limit) if limit is not None else MAX_LINES
+        partial = offset is not None or limit is not None
+
+        if start > total_lines:
+            file_state.record_read(normalized, partial=True)
+            return _ok(
+                f"<system-reminder>Warning: the file exists but is shorter "
+                f"than the provided offset ({start}). The file has "
+                f"{total_lines} lines.</system-reminder>"
+            )
+
+        # Slice lines (convert 1-indexed start to 0-indexed)
+        selected = lines[start - 1 : start - 1 + max_lines]
+
+        # Format as cat -n output
+        output_lines = []
+        for i, line in enumerate(selected, start=start):
+            # Truncate long lines
+            if len(line) > MAX_LINE_LEN:
+                line = line[:MAX_LINE_LEN]
+            output_lines.append(f"{i:>6}\t{line}")
+
+        file_state.record_read(normalized, partial=partial)
+        return _ok("\n".join(output_lines))
 
     # ------------------------------------------------------------------
     # Edit tool (MCP replacement for built-in)
@@ -458,7 +588,7 @@ def create_aleph_mcp_server(
     server = create_sdk_mcp_server(
         name="aleph",
         version="0.2.0",
-        tools=[bash_tool, edit_tool, write_tool, activate_skill, send_message],
+        tools=[bash_tool, read_tool, edit_tool, write_tool, activate_skill, send_message],
     )
     return server, cleanup
 
@@ -478,6 +608,27 @@ def _error(text: str) -> dict:
         "content": [{"type": "text", "text": text}],
         "isError": True,
     }
+
+
+# Extensions that should be rejected outright (binary files)
+_BINARY_EXTENSIONS = frozenset([
+    "exe", "dll", "so", "dylib", "app", "msi", "deb", "rpm", "bin",
+    "dat", "db", "sqlite", "sqlite3", "mdb", "idx",
+    "zip", "rar", "tar", "gz", "bz2", "7z", "xz", "z", "tgz", "iso",
+    "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+    "ttf", "otf", "woff", "woff2", "eot",
+    "psd", "ai", "eps", "sketch", "fig", "xd", "blend", "obj", "3ds",
+    "class", "jar", "war", "pyc", "pyo", "rlib", "swf",
+    "mp3", "wav", "flac", "ogg", "aac", "m4a", "wma", "aiff", "opus",
+    "mp4", "avi", "mov", "wmv", "flv", "mkv", "webm", "m4v", "mpeg", "mpg",
+])
+
+# Extensions that our MCP Read can't handle — redirect to built-in Read
+_MEDIA_EXTENSIONS = frozenset([
+    "png", "jpg", "jpeg", "gif", "webp",  # images
+    "pdf",                                  # PDFs
+    "ipynb",                                # Jupyter notebooks
+])
 
 
 def _write_file(path: str, content: str) -> None:
