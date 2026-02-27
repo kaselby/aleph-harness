@@ -194,6 +194,7 @@ def _get_knowledge_cutoff(model: str) -> str:
 from .config import ALLOWED_TOOLS, BASE_TOOLS, AlephConfig
 from .hooks import (
     _build_session_recap,
+    create_context_warning_hook,
     create_inbox_check_hook,
     create_plan_nudge_hook,
     create_read_tracking_hook,
@@ -381,6 +382,9 @@ class AlephHarness:
         # Shared file state for MCP Edit/Write ↔ Read hook coordination
         file_state = FileState()
 
+        # Session control — shared state between MCP tools, TUI, and hooks
+        self.session_control = SessionControl(ephemeral=self.config.ephemeral)
+
         # Build hooks
         inbox_check = create_inbox_check_hook(inbox)
         read_tracker = create_read_tracking_hook(inbox, file_state=file_state)
@@ -388,6 +392,7 @@ class AlephHarness:
         plans_path = self.config.home / "plans"
         plan_file = plans_path / f"{self.agent_id}.yml"
         plan_nudge = create_plan_nudge_hook(plan_file, interval=20)
+        context_warning = create_context_warning_hook(self.session_control)
         skill_context = create_skill_context_hook(self.config.skills_path)
         usage_log = create_usage_log_hook(
             self.config.home / "logs", self.agent_id, self.config.tools_path / "bin"
@@ -395,8 +400,8 @@ class AlephHarness:
 
         hooks = {
             "PostToolUse": [
-                # Inbox check, reminders, plan nudges, and usage logging on every tool call
-                HookMatcher(matcher=None, hooks=[inbox_check, reminder, plan_nudge, usage_log]),
+                # Inbox check, reminders, plan nudges, context warnings, and usage logging
+                HookMatcher(matcher=None, hooks=[inbox_check, reminder, plan_nudge, context_warning, usage_log]),
                 # Read tracking fires for both built-in Read and MCP Read
                 HookMatcher(matcher="Read", hooks=[read_tracker]),
                 HookMatcher(matcher="mcp__aleph__Read", hooks=[read_tracker]),
@@ -431,7 +436,6 @@ class AlephHarness:
             env["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
 
         # Build MCP server for framework tools (needs cwd + env + file_state)
-        self.session_control = SessionControl(ephemeral=self.config.ephemeral)
         aleph_server, self._shell_cleanup = create_aleph_mcp_server(
             self.config.inbox_path, self.config.skills_path,
             agent_id=self.agent_id,

@@ -201,6 +201,72 @@ def create_reminder_hook(interval: int = 50):
     return reminder_hook
 
 
+def create_context_warning_hook(session_control, max_tokens: int = 200_000):
+    """Create a PostToolUse hook that warns when context usage crosses thresholds.
+
+    Fires at 50% (100k), then every 10% after that. Each threshold fires
+    only once. The warning includes the current usage and a suggestion to
+    consider handoffs at higher levels.
+
+    Args:
+        session_control: SessionControl instance with context_tokens field.
+        max_tokens: Maximum context window size (default 200k).
+    """
+    # Thresholds as fractions: 0.50, 0.60, 0.70, 0.80, 0.90
+    thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
+    fired: set[float] = set()
+
+    async def context_warning_hook(
+        input_data: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        if session_control is None:
+            return {}
+
+        tokens = session_control.context_tokens
+        if tokens <= 0:
+            return {}
+
+        fraction = tokens / max_tokens
+
+        # Find the highest threshold we've crossed that hasn't fired yet
+        crossed = None
+        for t in thresholds:
+            if fraction >= t and t not in fired:
+                crossed = t
+
+        if crossed is None:
+            return {}
+
+        fired.add(crossed)
+        pct = int(crossed * 100)
+        token_k = f"{tokens // 1000}k"
+
+        if crossed >= 0.8:
+            urgency = (
+                "Context is getting tight. If you're working autonomously, "
+                "write a handoff now and prepare to spawn a continuation."
+            )
+        elif crossed >= 0.6:
+            urgency = (
+                "If this is a long task, start thinking about what a handoff "
+                "would look like."
+            )
+        else:
+            urgency = "No action needed yet — this is informational."
+
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": (
+                    f"[Context: {pct}%] Using ~{token_k} of {max_tokens // 1000}k tokens. "
+                    f"{urgency}"
+                ),
+            }
+        }
+
+    return context_warning_hook
+
+
 def create_plan_nudge_hook(plan_path: Path, interval: int = 20):
     """Create a PostToolUse hook that periodically injects the agent's current plan.
 

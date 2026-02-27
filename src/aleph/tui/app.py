@@ -940,6 +940,9 @@ class AlephApp:
                         + usage.get("cache_read_input_tokens", 0)
                         + usage.get("cache_creation_input_tokens", 0)
                     )
+                    # Share with hooks via session_control
+                    if self._harness.session_control:
+                        self._harness.session_control.context_tokens = self._context_tokens
                     if self._app:
                         self._app.invalidate()
 

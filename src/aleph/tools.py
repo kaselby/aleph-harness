@@ -85,11 +85,15 @@ class FileState:
 # ---------------------------------------------------------------------------
 
 class SessionControl:
-    """Shared state for session lifecycle signals between MCP tools and the TUI."""
+    """Shared state for session lifecycle signals between MCP tools and the TUI.
+
+    Also carries context usage data (updated by the TUI, read by hooks).
+    """
 
     def __init__(self, *, ephemeral: bool = False):
         self.ephemeral = ephemeral
         self.quit_requested = False
+        self.context_tokens: int = 0  # updated by TUI from API usage data
 
 
 def create_aleph_mcp_server(
@@ -748,21 +752,23 @@ def create_aleph_mcp_server(
 
     @tool(
         "exit_session",
-        "Exit the current session cleanly. Only available for ephemeral (spawned) "
-        "agents that have completed their task. Call this when your work is done "
-        "and you have nothing left to do. Do NOT call this in interactive sessions "
-        "with a user.",
+        "Exit the current session cleanly. The harness will handle session "
+        "summaries and memory commits before shutdown.\n\n"
+        "Appropriate uses:\n"
+        "- Ephemeral agents that have completed their task\n"
+        "- Autonomous agents handing off to a continuation (write the handoff "
+        "first, then exit)\n\n"
+        "Do NOT use in interactive sessions — let the user decide when to end "
+        "the conversation. If you're unsure whether you're running autonomously, "
+        "you're not.",
         {
             "type": "object",
             "properties": {},
         },
     )
     async def exit_session_tool(args: dict) -> dict:
-        if session_control is None or not session_control.ephemeral:
-            return _error(
-                "exit_session is only available in ephemeral mode. "
-                "Interactive sessions should be ended by the user."
-            )
+        if session_control is None:
+            return _error("No session control available.")
 
         session_control.quit_requested = True
         return _ok(
