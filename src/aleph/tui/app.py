@@ -308,6 +308,18 @@ def _fmt_tokens(n: int) -> str:
     return f"{n // 1000}k"
 
 
+def _display_name(name: str) -> str:
+    """Convert internal tool name to a human-friendly display name.
+
+    mcp__aleph__Bash  -> Aleph::Bash
+    Read              -> Base::Read
+    WebFetch          -> Base::WebFetch
+    """
+    if name.startswith("mcp__aleph__"):
+        return f"Aleph::{name[len('mcp__aleph__'):]}"
+    return f"Base::{name}"
+
+
 def _format_tool_input(name: str, input: dict) -> str:
     """Format tool input for display, tailored per tool type."""
     match name:
@@ -322,7 +334,7 @@ def _format_tool_input(name: str, input: dict) -> str:
             if desc:
                 return f"{desc}\n$ {cmd_display}"
             return f"$ {cmd_display}"
-        case "Read":
+        case "Read" | "mcp__aleph__Read":
             path = input.get("file_path", "")
             parts = [path]
             if "offset" in input:
@@ -330,9 +342,9 @@ def _format_tool_input(name: str, input: dict) -> str:
             if "limit" in input:
                 parts.append(f"({input['limit']} lines)")
             return " ".join(parts)
-        case "Write":
+        case "Write" | "mcp__aleph__Write":
             return input.get("file_path", "")
-        case "Edit":
+        case "Edit" | "mcp__aleph__Edit":
             path = input.get("file_path", "")
             old = input.get("old_string", "")
             if old:
@@ -381,13 +393,13 @@ def _format_tool_result(name: str, content: str | list | None, is_error: bool | 
         return f"Error:\n{error_text}"
 
     match name:
-        case "Read":
+        case "Read" | "mcp__aleph__Read":
             summary = f"{len(lines)} lines"
         case "Bash" | "mcp__aleph__Bash":
             summary = "output:"
-        case "Write":
+        case "Write" | "mcp__aleph__Write":
             summary = f"wrote {len(text)} bytes"
-        case "Edit":
+        case "Edit" | "mcp__aleph__Edit":
             summary = "applied"
         case _:
             summary = ""
@@ -625,7 +637,7 @@ class AlephApp:
         return HTML(
             " <perm-prompt>Allow {tool}?</perm-prompt>"
             "  <perm-key>[y]</perm-key> accept"
-            "  <perm-key>[n]</perm-key> reject".format(tool=req.tool_name)
+            "  <perm-key>[n]</perm-key> reject".format(tool=_display_name(req.tool_name))
         )
 
     def run(self) -> None:
@@ -989,11 +1001,12 @@ class AlephApp:
 
     def _render_permission_prompt(self, req: PermissionRequest) -> None:
         """Render diff or command preview for a permission request."""
+        display = _display_name(req.tool_name)
         path = req.tool_input.get("file_path", "")
         if path:
-            _tprint("\n  <tool>\u2192 {}</tool>  <dim>{}</dim>", req.tool_name, path)
+            _tprint("\n  <tool>\u2192 {}</tool>  <dim>{}</dim>", display, path)
         else:
-            _tprint("\n  <tool>\u2192 {}</tool>", req.tool_name)
+            _tprint("\n  <tool>\u2192 {}</tool>", display)
 
         if req.diff_text:
             _tprint("")
@@ -1036,11 +1049,12 @@ class AlephApp:
 
         # Auto-approved — show abbreviated summary
         details = _format_tool_input(name, input)
+        display = _display_name(name)
         if details:
             indented = "\n".join(f"    {line}" for line in details.split("\n"))
-            _tprint("\n  <tool>\u2192 {}</tool>\n<dim>{}</dim>", name, indented)
+            _tprint("\n  <tool>\u2192 {}</tool>\n<dim>{}</dim>", display, indented)
         else:
-            _tprint("\n  <tool>\u2192 {}</tool>", name)
+            _tprint("\n  <tool>\u2192 {}</tool>", display)
 
     def _on_tool_call_result(
         self, name: str, content: str | list | None, is_error: bool | None

@@ -113,7 +113,7 @@ def needs_permission(mode: PermissionMode, tool_name: str) -> bool:
     """Whether this tool requires user permission in the given mode."""
     if mode == PermissionMode.YOLO:
         return False
-    if tool_name in ("Edit", "Write"):
+    if tool_name in ("Edit", "Write", "mcp__aleph__Edit", "mcp__aleph__Write"):
         return True  # Edit/Write gated in both safe and default
     if tool_name in ("Bash", "mcp__aleph__Bash") and mode == PermissionMode.SAFE:
         return True
@@ -137,9 +137,9 @@ class PermissionRequest:
 
 def generate_diff(tool_name: str, tool_input: dict[str, Any]) -> str:
     """Generate a human-readable diff or preview for a tool call."""
-    if tool_name == "Edit":
+    if tool_name in ("Edit", "mcp__aleph__Edit"):
         return _diff_edit(tool_input)
-    elif tool_name == "Write":
+    elif tool_name in ("Write", "mcp__aleph__Write"):
         return _diff_write(tool_input)
     elif tool_name in ("Bash", "mcp__aleph__Bash"):
         return _preview_bash(tool_input)
