@@ -216,6 +216,7 @@ class AlephHarness:
         self._permission_hook = None
         self._shell_cleanup = None
         self._stderr_log: Path | None = None
+        self._stderr_fh = None
         self.restart_requested = False
 
     @property
@@ -259,16 +260,19 @@ class AlephHarness:
             pass
 
     @staticmethod
-    def lookup_session(home: Path, agent_id: str) -> str | None:
-        """Look up a Claude session UUID by agent ID. Returns None if not found."""
+    def lookup_session(home: Path, agent_id: str) -> dict | None:
+        """Look up a session registry entry by agent ID.
+
+        Returns the full entry dict (session_uuid, cwd, model, started_at)
+        or None if not found.
+        """
         registry_path = home / "logs" / "session-registry.json"
         if not registry_path.exists():
             return None
         try:
             registry = json.loads(registry_path.read_text())
-            entry = registry.get(agent_id)
-            return entry["session_uuid"] if entry else None
-        except (json.JSONDecodeError, OSError, KeyError):
+            return registry.get(agent_id)
+        except (json.JSONDecodeError, OSError):
             return None
 
     def set_permission_hook(self, hook) -> None:
@@ -388,8 +392,9 @@ class AlephHarness:
             "PostToolUse": [
                 # Inbox check, reminders, and usage logging on every tool call
                 HookMatcher(matcher=None, hooks=[inbox_check, reminder, usage_log]),
-                # Read tracking only fires when the agent uses Read
+                # Read tracking fires for both built-in Read and MCP Read
                 HookMatcher(matcher="Read", hooks=[read_tracker]),
+                HookMatcher(matcher="mcp__aleph__Read", hooks=[read_tracker]),
                 # Skill activation: replace MCP tool output with system context
                 HookMatcher(matcher="mcp__aleph__activate_skill", hooks=[skill_context]),
             ],
@@ -439,6 +444,17 @@ class AlephHarness:
                     f"Check ~/.aleph/logs/session-registry.json"
                 )
 
+        # Set up stderr logging — captures Claude CLI error output to a file
+        # so we can diagnose crashes after the fact.
+        log_dir = self.config.home / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._stderr_log = log_dir / f"stderr-{self.agent_id}.log"
+        self._stderr_fh = open(self._stderr_log, "a")
+
+        def _stderr_callback(line: str) -> None:
+            self._stderr_fh.write(line)
+            self._stderr_fh.flush()
+
         return ClaudeAgentOptions(
             system_prompt=full_prompt,
             tools=tools,
@@ -452,6 +468,7 @@ class AlephHarness:
             include_partial_messages=True,
             continue_conversation=self.config.continue_session,
             resume=resume_uuid,
+            stderr=_stderr_callback,
         )
 
     async def start(self):
@@ -648,6 +665,13 @@ class AlephHarness:
         if self._client:
             await self._client.disconnect()
             self._client = None
+        if self._stderr_fh:
+            self._stderr_fh.close()
+            self._stderr_fh = None
+        # Clean up empty stderr logs (normal sessions produce no output)
+        if self._stderr_log and self._stderr_log.exists() and self._stderr_log.stat().st_size == 0:
+            self._stderr_log.unlink()
+            self._stderr_log = None
 
     async def __aenter__(self):
         await self.start()

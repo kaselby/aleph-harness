@@ -108,9 +108,11 @@ def _launch_in_tmux(args: argparse.Namespace) -> None:
     agent_id = args.resume or args.id or f"aleph-{uuid.uuid4().hex[:8]}"
     inner_cmd = _build_inner_command(args, agent_id)
 
-    # Create the session detached, with the guard env var set
+    # Create the session detached, with the guard env var set.
+    # Wrap command so the pane survives process exit (lets user see errors).
+    wrapped_cmd = f"{inner_cmd}; echo '\\n[Process exited. Press Enter to close.]'; read"
     result = subprocess.run(
-        ["tmux", "new-session", "-d", "-s", agent_id, "-e", f"{_TMUX_GUARD}=1", inner_cmd],
+        ["tmux", "new-session", "-d", "-s", agent_id, "-e", f"{_TMUX_GUARD}=1", wrapped_cmd],
         capture_output=True, text=True,
     )
 
