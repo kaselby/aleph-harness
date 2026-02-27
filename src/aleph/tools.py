@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from .shell import PersistentShell
@@ -99,6 +100,7 @@ def create_aleph_mcp_server(
     env: dict[str, str] | None = None,
     file_state: FileState | None = None,
     session_control: SessionControl | None = None,
+    plans_path: Path | None = None,
 ):
     """Create the Aleph MCP server with framework-specific tools.
 
@@ -115,6 +117,7 @@ def create_aleph_mcp_server(
         env: Environment variable overrides for the persistent shell.
         file_state: Shared FileState for Read/Edit/Write coordination.
         session_control: Shared session lifecycle state (for exit_session tool).
+        plans_path: Directory for agent plan files (e.g. ~/.aleph/plans/).
     """
     if file_state is None:
         file_state = FileState()
@@ -767,11 +770,110 @@ def create_aleph_mcp_server(
             "the session will end after this turn completes."
         )
 
+    # ------------------------------------------------------------------
+    # plan tool — externalized task planning
+    # ------------------------------------------------------------------
+
+    _VALID_STATUSES = {"pending", "in_progress", "done"}
+
+    def _plan_file() -> Path:
+        """Path to this agent's plan file."""
+        root = plans_path or inbox_root.parent / "plans"
+        return root / f"{agent_id}.yml"
+
+    def _format_plan(data: dict) -> str:
+        """Format a plan dict as readable text for injection into context."""
+        lines = [f"Goal: {data.get('goal', '(none)')}"]
+        tasks = data.get("tasks", [])
+        for t in tasks:
+            status = t.get("status", "pending")
+            desc = t.get("description", "")
+            lines.append(f"  [{status}] {desc}")
+        done = sum(1 for t in tasks if t.get("status") == "done")
+        lines.append(f"Progress: {done}/{len(tasks)} done.")
+        return "\n".join(lines)
+
+    @tool(
+        "plan",
+        "Create or update your working plan. Use this to externalize your task "
+        "breakdown before starting complex work. Each call replaces the entire "
+        "plan — include all tasks, not just changes.\n\n"
+        "Call this tool to:\n"
+        "- Break down a complex task before starting\n"
+        "- Mark tasks as done as you complete them\n"
+        "- Adjust the plan when requirements change\n\n"
+        "Your plan is stored on the filesystem and visible to coordinators "
+        "and other agents.",
+        {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "Brief description of what you're working on",
+                },
+                "tasks": {
+                    "type": "array",
+                    "description": "Ordered list of tasks",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {
+                                "type": "string",
+                                "description": "What this task involves",
+                            },
+                            "status": {
+                                "type": "string",
+                                "description": "pending, in_progress, or done",
+                                "enum": ["pending", "in_progress", "done"],
+                            },
+                        },
+                        "required": ["description", "status"],
+                    },
+                },
+            },
+            "required": ["goal", "tasks"],
+        },
+    )
+    async def plan_tool(args: dict) -> dict:
+        goal = args.get("goal", "")
+        tasks = args.get("tasks", [])
+
+        if not goal:
+            return _error("A goal is required.")
+        if not tasks:
+            return _error("At least one task is required.")
+
+        # Validate statuses
+        for t in tasks:
+            if t.get("status") not in _VALID_STATUSES:
+                return _error(
+                    f"Invalid status '{t.get('status')}' for task "
+                    f"'{t.get('description', '?')}'. "
+                    f"Use: pending, in_progress, or done."
+                )
+
+        plan_data = {
+            "goal": goal,
+            "updated": datetime.now(timezone.utc).isoformat(),
+            "agent": agent_id,
+            "tasks": [
+                {"description": t["description"], "status": t["status"]}
+                for t in tasks
+            ],
+        }
+
+        plan_path = _plan_file()
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text(yaml.dump(plan_data, default_flow_style=False, sort_keys=False))
+
+        formatted = _format_plan(plan_data)
+        return _ok(f"Plan updated.\n\n{formatted}")
+
     server = create_sdk_mcp_server(
         name="aleph",
         version="0.2.0",
         tools=[bash_tool, read_tool, edit_tool, write_tool, activate_skill,
-               message_tool, exit_session_tool],
+               message_tool, exit_session_tool, plan_tool],
     )
     return server, cleanup
 

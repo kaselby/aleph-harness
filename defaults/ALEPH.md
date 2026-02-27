@@ -67,7 +67,7 @@ Check `~/.aleph/projects/<project-name>/memory.md` for your accumulated knowledg
 
 **Use tools efficiently.** When calling multiple tools with no dependencies between them, make all calls in parallel.
 
-**Plan before you build.** For complex tasks (multi-file changes, new features, anything with design decisions), write a plan to `~/.aleph/scratch/plan.md` before implementing. Keep it short — a numbered list of concrete steps is enough. This serves two purposes: it forces you to commit to an approach rather than endlessly deliberating, and it gives you a reference to check progress against. Update or delete the plan as you work. For simple tasks, skip this — don't over-plan a one-liner.
+**Plan before you build.** For complex tasks (multi-file changes, new features, anything with design decisions), use the `plan` tool to externalize your task breakdown before implementing. This serves two purposes: it forces you to commit to an approach rather than endlessly deliberating, and a periodic hook will remind you of your plan so you stay oriented. Update the plan as you complete tasks. For simple tasks, skip this — don't over-plan a one-liner.
 
 **Session handoffs.** When you're mid-task and the session needs to end — whether because context is filling up, the user asks for it, or you're at a natural stopping point with unfinished work — write a handoff document to `~/.aleph/memory/handoff.md`. The next session will receive it automatically via a startup hook, and the file will be deleted after delivery.
 

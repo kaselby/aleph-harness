@@ -1,4 +1,4 @@
-"""Hook callbacks for message delivery, read tracking, periodic reminders, and usage logging."""
+"""Hook callbacks for message delivery, read tracking, periodic reminders, planning nudges, and usage logging."""
 
 import json
 import os
@@ -199,6 +199,69 @@ def create_reminder_hook(interval: int = 50):
         }
 
     return reminder_hook
+
+
+def create_plan_nudge_hook(plan_path: Path, interval: int = 20):
+    """Create a PostToolUse hook that periodically injects the agent's current plan.
+
+    Reads the agent's plan file from disk and injects it as additionalContext.
+    Nudges happen every `interval` tool calls, but only when a plan file exists.
+    If there's no plan, stays silent — plan creation is prompted by ALEPH.md
+    instructions, not nagging hooks.
+
+    Args:
+        plan_path: Path to this agent's plan YAML file.
+        interval: Number of tool calls between plan injections.
+    """
+    call_count = 0
+
+    async def plan_nudge_hook(
+        input_data: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        nonlocal call_count
+        call_count += 1
+
+        if call_count % interval != 0:
+            return {}
+
+        if not plan_path.exists():
+            return {}
+
+        try:
+            data = yaml.safe_load(plan_path.read_text())
+        except (yaml.YAMLError, OSError):
+            return {}
+
+        if not data or not data.get("tasks"):
+            return {}
+
+        # Format the plan
+        lines = [f"Goal: {data.get('goal', '(none)')}"]
+        tasks = data.get("tasks", [])
+        for t in tasks:
+            status = t.get("status", "pending")
+            desc = t.get("description", "")
+            lines.append(f"  [{status}] {desc}")
+        done = sum(1 for t in tasks if t.get("status") == "done")
+        total = len(tasks)
+        lines.append(f"Progress: {done}/{total} done.")
+
+        # Don't nudge if all tasks are done
+        if done == total:
+            return {}
+
+        plan_text = "\n".join(lines)
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": (
+                    f"[Plan check] Your current plan:\n{plan_text}\n"
+                    f"Update with the `plan` tool if this is stale or if you've completed tasks."
+                ),
+            }
+        }
+
+    return plan_nudge_hook
 
 
 def _get_session_timestamp(path: Path) -> datetime:

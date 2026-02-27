@@ -195,6 +195,7 @@ from .config import ALLOWED_TOOLS, BASE_TOOLS, AlephConfig
 from .hooks import (
     _build_session_recap,
     create_inbox_check_hook,
+    create_plan_nudge_hook,
     create_read_tracking_hook,
     create_reminder_hook,
     create_skill_context_hook,
@@ -384,6 +385,9 @@ class AlephHarness:
         inbox_check = create_inbox_check_hook(inbox)
         read_tracker = create_read_tracking_hook(inbox, file_state=file_state)
         reminder = create_reminder_hook(interval=25)
+        plans_path = self.config.home / "plans"
+        plan_file = plans_path / f"{self.agent_id}.yml"
+        plan_nudge = create_plan_nudge_hook(plan_file, interval=20)
         skill_context = create_skill_context_hook(self.config.skills_path)
         usage_log = create_usage_log_hook(
             self.config.home / "logs", self.agent_id, self.config.tools_path / "bin"
@@ -391,8 +395,8 @@ class AlephHarness:
 
         hooks = {
             "PostToolUse": [
-                # Inbox check, reminders, and usage logging on every tool call
-                HookMatcher(matcher=None, hooks=[inbox_check, reminder, usage_log]),
+                # Inbox check, reminders, plan nudges, and usage logging on every tool call
+                HookMatcher(matcher=None, hooks=[inbox_check, reminder, plan_nudge, usage_log]),
                 # Read tracking fires for both built-in Read and MCP Read
                 HookMatcher(matcher="Read", hooks=[read_tracker]),
                 HookMatcher(matcher="mcp__aleph__Read", hooks=[read_tracker]),
@@ -433,6 +437,7 @@ class AlephHarness:
             agent_id=self.agent_id,
             cwd=cwd, env=env, file_state=file_state,
             session_control=self.session_control,
+            plans_path=plans_path,
         )
 
         # Resolve --resume agent ID to Claude session UUID + original cwd
