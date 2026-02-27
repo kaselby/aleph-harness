@@ -162,7 +162,10 @@ def _discover_skills(skills_path) -> list[dict]:
         if not text.startswith("---"):
             continue
         # Extract YAML frontmatter
-        end = text.index("---", 3)
+        try:
+            end = text.index("---", 3)
+        except ValueError:
+            continue
         frontmatter = yaml.safe_load(text[3:end])
         if frontmatter and "name" in frontmatter:
             skills.append({

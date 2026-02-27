@@ -90,11 +90,10 @@ class PersistentShell:
             exit_code = -1
             cwd = self._cwd
 
-            try:
+            async def _read_until_sentinel():
+                nonlocal exit_code, cwd
                 while True:
-                    line = await asyncio.wait_for(
-                        proc.stdout.readline(), timeout=timeout_s
-                    )
+                    line = await proc.stdout.readline()
                     if not line:
                         # EOF — process died
                         break
@@ -111,6 +110,9 @@ class PersistentShell:
                         self._cwd = cwd
                         break
                     output_lines.append(decoded)
+
+            try:
+                await asyncio.wait_for(_read_until_sentinel(), timeout=timeout_s)
             except asyncio.TimeoutError:
                 timed_out = True
                 exit_code = -1

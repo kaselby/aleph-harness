@@ -776,11 +776,17 @@ class AlephApp:
         inbox = self._harness.config.agent_inbox(self._harness.agent_id)
         while True:
             await asyncio.sleep(1.0)
-            if not self._should_deliver(inbox):
-                continue
-            msg = self._next_unread_message(inbox)
-            if msg:
-                await self._deliver_agent_message(msg)
+            try:
+                if not self._should_deliver(inbox):
+                    continue
+                msg = self._next_unread_message(inbox)
+                if msg:
+                    await self._deliver_agent_message(msg)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Don't let a bad message or filesystem error kill the watcher
+                await asyncio.sleep(5.0)
 
     def _should_deliver(self, inbox: Path) -> bool:
         """Check whether conditions are met for auto-delivering a message."""
@@ -941,7 +947,7 @@ class AlephApp:
 
         elif isinstance(msg, ResultMessage):
             # Capture session ID for conversation log archival and resume support
-            if msg.session_id:
+            if msg.session_id and not self._harness.session_id:
                 self._harness.session_id = msg.session_id
                 self._harness.register_session()
             self._on_turn_complete(msg)

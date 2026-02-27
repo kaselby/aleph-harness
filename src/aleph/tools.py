@@ -117,8 +117,11 @@ def create_aleph_mcp_server(
 
         # Strip YAML frontmatter — the model doesn't need the metadata
         if content.startswith("---"):
-            end = content.index("---", 3)
-            content = content[end + 3:].strip()
+            try:
+                end = content.index("---", 3)
+                content = content[end + 3:].strip()
+            except ValueError:
+                pass  # malformed frontmatter, return as-is
 
         return {"content": [{"type": "text", "text": content}]}
 
@@ -145,7 +148,8 @@ def create_aleph_mcp_server(
         recipient_inbox.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        msg_id = f"msg-{timestamp}"
+        import uuid as _uuid
+        msg_id = f"msg-{timestamp}-{_uuid.uuid4().hex[:6]}"
         msg_path = recipient_inbox / f"{msg_id}.md"
 
         content = (
