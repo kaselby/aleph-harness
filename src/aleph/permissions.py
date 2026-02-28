@@ -208,9 +208,10 @@ PermissionHandler = Callable[["PermissionRequest"], Awaitable[bool]]
 
 
 def _notify(title: str, message: str) -> None:
-    """Send a macOS notification. Best-effort, never raises.
+    """Send a desktop notification. Best-effort, never raises.
 
-    Tries terminal-notifier first (reliable from tmux), falls back to osascript.
+    macOS: tries terminal-notifier first (reliable from tmux), falls back to osascript.
+    Linux: uses notify-send (libnotify).
     """
     try:
         subprocess.Popen(
@@ -227,7 +228,15 @@ def _notify(title: str, message: str) -> None:
              f'display notification "{message}" with title "{title}"'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-    except OSError:
+        return
+    except (FileNotFoundError, OSError):
+        pass
+    try:
+        subprocess.Popen(
+            ["notify-send", title, message],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, OSError):
         pass
 
 

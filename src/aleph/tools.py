@@ -611,6 +611,23 @@ def create_aleph_mcp_server(
     # ------------------------------------------------------------------
 
     channels_path = inbox_root.parent / "channels.json"
+    channels_dir = inbox_root.parent / "channels"
+
+    def _append_channel_history(channel: str, sender: str, summary: str,
+                                body: str, priority: str) -> None:
+        """Append a message to the channel's persistent history log."""
+        history_dir = channels_dir / channel
+        history_dir.mkdir(parents=True, exist_ok=True)
+        history_file = history_dir / "history.jsonl"
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "from": sender,
+            "summary": summary,
+            "body": body,
+            "priority": priority,
+        }
+        with open(history_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
     def _read_channels() -> dict:
         """Read the channel registry. Returns {channel_name: [agent_ids]}."""
@@ -787,6 +804,9 @@ def create_aleph_mcp_server(
 
             for recipient in recipients:
                 _send_one(recipient, agent_id, summary, body, priority, channel=channel)
+
+            # Persist to channel history
+            _append_channel_history(channel, agent_id, summary, body, priority)
 
             return _ok(
                 f"Message broadcast to channel '{channel}' "

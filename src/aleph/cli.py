@@ -102,7 +102,12 @@ def _build_inner_command(args: argparse.Namespace, agent_id: str) -> str:
 def _launch_in_tmux(args: argparse.Namespace) -> None:
     """Launch aleph in a tmux session."""
     if not shutil.which("tmux"):
-        print("Error: tmux is not installed. Install it with: brew install tmux")
+        import platform
+        if platform.system() == "Darwin":
+            hint = "brew install tmux"
+        else:
+            hint = "apt install tmux  (or your distro's package manager)"
+        print(f"Error: tmux is not installed. Install it with: {hint}")
         sys.exit(1)
 
     agent_id = args.resume or args.id or f"aleph-{uuid.uuid4().hex[:8]}"
