@@ -140,6 +140,22 @@ def create_aleph_mcp_server(
     # Bash tool
     # ------------------------------------------------------------------
 
+    # Worklog for capturing cognitive state during sessions
+    aleph_home = inbox_root.parent
+    worklog_path = aleph_home / "memory" / "worklogs" / f"worklog-{agent_id}.md"
+
+    def _append_worklog(tag: str, text: str) -> None:
+        """Append a timestamped entry to the session worklog."""
+        ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        worklog_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(worklog_path, "a") as f:
+            f.write(f"[{ts}] ({tag}) {text}\n")
+
+    _THINKING_DESC = (
+        "What you're doing and why — a sentence or two about "
+        "your current reasoning. Captured to your session worklog."
+    )
+
     @tool(
         "Bash",
         "Executes a bash command in a persistent shell. Environment variables, "
@@ -150,6 +166,10 @@ def create_aleph_mcp_server(
                 "command": {
                     "type": "string",
                     "description": "The command to execute",
+                },
+                "thinking": {
+                    "type": "string",
+                    "description": _THINKING_DESC,
                 },
                 "description": {
                     "type": "string",
@@ -170,6 +190,11 @@ def create_aleph_mcp_server(
 
         command = args.get("command", "")
         timeout_ms = args.get("timeout", 120_000)
+
+        # Capture thinking to worklog
+        thinking = args.get("thinking")
+        if thinking:
+            _append_worklog("tool", thinking.strip())
 
         if not command.strip():
             return {
@@ -207,6 +232,7 @@ def create_aleph_mcp_server(
     MAX_LINES = 2000
     MAX_LINE_LEN = 2000
 
+
     @tool(
         "Read",
         "Reads a file from the local filesystem. Use this tool by default for "
@@ -229,6 +255,10 @@ def create_aleph_mcp_server(
                     "type": "string",
                     "description": "The absolute path to the file to read",
                 },
+                "thinking": {
+                    "type": "string",
+                    "description": _THINKING_DESC,
+                },
                 "offset": {
                     "type": "number",
                     "description": (
@@ -248,6 +278,9 @@ def create_aleph_mcp_server(
         },
     )
     async def read_tool(args: dict) -> dict:
+        thinking = args.get("thinking")
+        if thinking:
+            _append_worklog("tool", thinking.strip())
         file_path = args.get("file_path", "")
         offset = args.get("offset")
         limit = args.get("limit")
@@ -376,6 +409,10 @@ def create_aleph_mcp_server(
                         "(must be different from old_string)"
                     ),
                 },
+                "thinking": {
+                    "type": "string",
+                    "description": _THINKING_DESC,
+                },
                 "replace_all": {
                     "type": "boolean",
                     "description": "Replace all occurrences of old_string (default false)",
@@ -386,6 +423,9 @@ def create_aleph_mcp_server(
         },
     )
     async def edit_tool(args: dict) -> dict:
+        thinking = args.get("thinking")
+        if thinking:
+            _append_worklog("tool", thinking.strip())
         file_path = args.get("file_path", "")
         old_string = args.get("old_string", "")
         new_string = args.get("new_string", "")
@@ -488,11 +528,18 @@ def create_aleph_mcp_server(
                     "type": "string",
                     "description": "The content to write to the file",
                 },
+                "thinking": {
+                    "type": "string",
+                    "description": _THINKING_DESC,
+                },
             },
             "required": ["file_path", "content"],
         },
     )
     async def write_tool(args: dict) -> dict:
+        thinking = args.get("thinking")
+        if thinking:
+            _append_worklog("tool", thinking.strip())
         file_path = args.get("file_path", "")
         content = args.get("content", "")
 

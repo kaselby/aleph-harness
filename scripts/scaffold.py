@@ -97,8 +97,16 @@ def scaffold():
     memory_dir = ALEPH_HOME / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     (memory_dir / "sessions").mkdir(exist_ok=True)
-    for name in ["context.md", "preferences.md", "patterns.md"]:
+    (memory_dir / "latent" / "notes").mkdir(parents=True, exist_ok=True)
+    for name in ["core.md", "volatile.md", "buffer.md"]:
         f = memory_dir / name
+        if not f.exists():
+            f.write_text("")
+            print(f"  Created {f}")
+        else:
+            print(f"  Skipped {f} (already exists)")
+    for name in ["patterns.md", "preferences.md"]:
+        f = memory_dir / "latent" / name
         if not f.exists():
             f.write_text("")
             print(f"  Created {f}")

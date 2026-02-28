@@ -147,17 +147,17 @@ def create_read_tracking_hook(inbox_path: Path, file_state=None):
 _MEMORY_PROMPTS = [
     (
         "Has the user expressed any preferences this session — how they like to "
-        "work, communicate, or make decisions? Update ~/.aleph/memory/preferences.md "
+        "work, communicate, or make decisions? Update ~/.aleph/memory/latent/preferences.md "
         "if so."
     ),
     (
         "Have you learned any lessons or hit any gotchas this session? Has the "
-        "user corrected you on something? Update ~/.aleph/memory/patterns.md "
+        "user corrected you on something? Update ~/.aleph/memory/latent/patterns.md "
         "if so."
     ),
     (
         "Have you learned any durable knowledge worth adding to "
-        "~/.aleph/memory/context.md? New project facts, key references, "
+        "~/.aleph/memory/core.md? New project facts, key references, "
         "architectural details you'll always want to know?"
     ),
     (
@@ -328,6 +328,67 @@ def create_plan_nudge_hook(plan_path: Path, interval: int = 20):
         }
 
     return plan_nudge_hook
+
+
+def create_worklog_hooks(worklog_path: Path, interval_minutes: int = 5):
+    """Create a coordinated pair of hooks for periodic worklog capture.
+
+    Returns (stop_hook, post_tool_hook).
+
+    The Stop hook fires periodically and prompts the agent to write a broader
+    cognitive snapshot to the worklog. The PostToolUse hook then fires on the
+    next tool call (the worklog write) and returns control to the user via
+    ``continue: false``.
+
+    This avoids the double-response problem: the agent writes the worklog
+    and its turn ends cleanly, rather than producing both a worklog
+    acknowledgment and a separate response.
+    """
+    last_fired: list[float] = [0.0]
+    pending_cutoff: list[bool] = [False]
+
+    async def stop_hook(
+        input_data: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        import time
+
+        # Don't recurse — if we already blocked once, let the agent stop
+        if input_data.get("stop_hook_active", False):
+            return {}
+
+        # Throttle: only fire every interval_minutes of real time
+        now = time.time()
+        if now - last_fired[0] < interval_minutes * 60:
+            return {}
+
+        last_fired[0] = now
+        pending_cutoff[0] = True
+
+        return {
+            "decision": "block",
+            "reason": (
+                f"It's been a while — before responding, capture a broader snapshot "
+                f"of where your head is to the worklog. Run a Bash command to append "
+                f"to {worklog_path}: not just what you're doing right now, but where "
+                f"things stand overall, what's resolved, what's open, what you're "
+                f"thinking about. A few sentences — a wider-angle view than the "
+                f"per-tool-call annotations."
+            ),
+        }
+
+    async def post_tool_cutoff(
+        input_data: HookInput, tool_use_id: str | None, context: HookContext
+    ) -> HookJSONOutput:
+        """After the worklog write, end the agent's turn."""
+        if pending_cutoff[0]:
+            pending_cutoff[0] = False
+            return {
+                "continue_": False,
+                "stopReason": "Worklog snapshot captured.",
+            }
+        return {}
+
+    return stop_hook, post_tool_cutoff
 
 
 def _get_session_timestamp(path: Path) -> datetime:

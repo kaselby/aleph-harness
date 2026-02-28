@@ -702,11 +702,12 @@ class AlephApp:
             sc = self._harness.session_control
             skip_summary = self._harness.config.ephemeral or (sc and sc.skip_summary)
             if not skip_summary:
-                _tprint("\n<dim>Saving session summary...</dim>")
+                _tprint("\n<dim>Running session-end protocol...</dim>")
                 try:
-                    await self._harness.send(self._harness.get_summary_prompt())
-                    async for _ in self._harness.receive():
-                        pass
+                    for prompt in self._harness.get_session_end_prompts():
+                        await self._harness.send(prompt)
+                        async for _ in self._harness.receive():
+                            pass
                 except Exception:
                     pass
 
