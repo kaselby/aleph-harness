@@ -544,7 +544,9 @@ class AlephApp:
                 event.app.exit()
                 return
             if text == "/fquit":
-                app_ref._harness.config.ephemeral = True
+                sc = app_ref._harness.session_control
+                if sc:
+                    sc.skip_summary = True
                 event.app.exit()
                 return
 
