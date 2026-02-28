@@ -340,6 +340,12 @@ class AlephHarness:
             ctx += "\n\n---\n## Memory Context\n\n"
             ctx += context_file.read_text()
 
+        # Inject volatile state-of-mind if it exists
+        volatile_file = self.config.memory_path / "volatile.md"
+        if volatile_file.exists():
+            ctx += "\n\n---\n## Volatile Memory\n\n"
+            ctx += volatile_file.read_text()
+
         # Inject handoff and session recap (skip in ephemeral mode).
         # On --continue, skip both: the conversation history already has whatever
         # context the original session had, and handoff consumption is destructive
