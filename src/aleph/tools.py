@@ -93,6 +93,7 @@ class SessionControl:
     def __init__(self, *, ephemeral: bool = False):
         self.ephemeral = ephemeral
         self.quit_requested = False
+        self.skip_summary = False  # when True, skip session summary on exit
         self.context_tokens: int = 0  # updated by TUI from API usage data
 
 
@@ -758,12 +759,24 @@ def create_aleph_mcp_server(
         "- Ephemeral agents that have completed their task\n"
         "- Autonomous agents handing off to a continuation (write the handoff "
         "first, then exit)\n\n"
+        "Set `skip_summary` to true when doing autonomous self-continuation — "
+        "you've already written the handoff, so the summary protocol is "
+        "redundant overhead.\n\n"
         "Do NOT use in interactive sessions — let the user decide when to end "
         "the conversation. If you're unsure whether you're running autonomously, "
         "you're not.",
         {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "skip_summary": {
+                    "type": "boolean",
+                    "description": (
+                        "Skip the session summary and memory update protocol. "
+                        "Use when handing off to a continuation session."
+                    ),
+                    "default": False,
+                },
+            },
         },
     )
     async def exit_session_tool(args: dict) -> dict:
@@ -771,6 +784,9 @@ def create_aleph_mcp_server(
             return _error("No session control available.")
 
         session_control.quit_requested = True
+        if args.get("skip_summary", False):
+            session_control.skip_summary = True
+
         return _ok(
             "Session exit requested. Stop making tool calls — "
             "the session will end after this turn completes."

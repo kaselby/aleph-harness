@@ -697,7 +697,9 @@ class AlephApp:
                     pass
             # Bypass permissions for unattended exit tasks (summary, archival)
             self._perm_mode = PermissionMode.YOLO
-            if not self._harness.config.ephemeral:
+            sc = self._harness.session_control
+            skip_summary = self._harness.config.ephemeral or (sc and sc.skip_summary)
+            if not skip_summary:
                 _tprint("\n<dim>Saving session summary...</dim>")
                 try:
                     await self._harness.send(self._harness.get_summary_prompt())
@@ -705,12 +707,13 @@ class AlephApp:
                         pass
                 except Exception:
                     pass
-                # Archive conversation log
+
+            # Archive and commit even when skipping summary (but not for ephemeral)
+            if not self._harness.config.ephemeral:
                 archive_path = self._harness.archive_conversation()
                 if archive_path:
                     _tprint("<dim>Archived conversation to {}</dim>", archive_path)
 
-                # Auto-commit memory changes to git
                 commit_result = self._harness.commit_memory()
                 if commit_result:
                     _tprint("<dim>Git: {}</dim>", commit_result)
