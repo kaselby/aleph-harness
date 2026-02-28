@@ -352,8 +352,10 @@ def create_worklog_hooks(worklog_path: Path, interval_minutes: int = 5):
     ) -> HookJSONOutput:
         import time
 
-        # Don't recurse — if we already blocked once, let the agent stop
+        # Don't recurse — if we already blocked once, let the agent stop.
+        # Clear pending_cutoff so a stale flag doesn't fire on a later tool call.
         if input_data.get("stop_hook_active", False):
+            pending_cutoff[0] = False
             return {}
 
         # Throttle: only fire every interval_minutes of real time
