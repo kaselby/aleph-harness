@@ -146,6 +146,8 @@ def create_aleph_mcp_server(
 
     def _append_worklog(tag: str, text: str) -> None:
         """Append a timestamped entry to the session worklog."""
+        if session_control and session_control.ephemeral:
+            return
         ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         worklog_path.parent.mkdir(parents=True, exist_ok=True)
         with open(worklog_path, "a") as f:

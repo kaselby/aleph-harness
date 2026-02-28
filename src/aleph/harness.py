@@ -341,9 +341,10 @@ class AlephHarness:
             ctx += "\n\n---\n## Memory Context\n\n"
             ctx += context_file.read_text()
 
-        # Inject volatile state-of-mind if it exists
+        # Inject volatile state-of-mind if it exists (skip for ephemeral agents —
+        # volatile is the persistent agent's state of mind, not relevant to workers)
         volatile_file = self.config.memory_path / "volatile.md"
-        if volatile_file.exists():
+        if volatile_file.exists() and not self.config.ephemeral:
             ctx += "\n\n---\n## Volatile Memory\n\n"
             ctx += volatile_file.read_text()
 
@@ -403,9 +404,6 @@ class AlephHarness:
         usage_log = create_usage_log_hook(
             self.config.home / "logs", self.agent_id, self.config.tools_path / "bin"
         )
-        worklog_path = self.config.home / "memory" / "worklogs" / f"worklog-{self.agent_id}.md"
-        worklog_stop, worklog_cutoff = create_worklog_hooks(worklog_path)
-
         hooks = {
             "PostToolUse": [
                 # Inbox check, reminders, plan nudges, context warnings, and usage logging
@@ -415,14 +413,21 @@ class AlephHarness:
                 HookMatcher(matcher="mcp__aleph__Read", hooks=[read_tracker]),
                 # Skill activation: replace MCP tool output with system context
                 HookMatcher(matcher="mcp__aleph__activate_skill", hooks=[skill_context]),
-                # After worklog write, end agent's turn to return control to user
-                HookMatcher(matcher=None, hooks=[worklog_cutoff]),
             ],
-            "Stop": [
-                # Prompt worklog entry before handing control back to user
-                HookMatcher(matcher=None, hooks=[worklog_stop]),
-            ],
+            "Stop": [],
         }
+
+        # Worklog hooks only for persistent agents — ephemeral workers don't need
+        # cognitive snapshots or turn-ending after worklog writes
+        if not self.config.ephemeral:
+            worklog_path = self.config.home / "memory" / "worklogs" / f"worklog-{self.agent_id}.md"
+            worklog_stop, worklog_cutoff = create_worklog_hooks(worklog_path)
+            hooks["PostToolUse"].append(
+                HookMatcher(matcher=None, hooks=[worklog_cutoff]),
+            )
+            hooks["Stop"].append(
+                HookMatcher(matcher=None, hooks=[worklog_stop]),
+            )
 
         # Permission hook — fires before every tool call for interactive approval
         if self._permission_hook:
