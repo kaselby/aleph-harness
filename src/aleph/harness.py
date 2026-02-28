@@ -568,11 +568,10 @@ class AlephHarness:
     def get_session_end_prompts(self) -> list[str]:
         """Return the sequence of prompts for the session-end protocol.
 
-        Four prompts sent sequentially, each getting a full response:
-        1. Reflective priming (register shift, output not persisted)
-        2. Buffer triage (preserve durable items from old volatile)
-        3. Volatile update (fresh state-of-mind snapshot)
-        4. Session summary + project memory (archival)
+        Two prompts sent sequentially, each getting a full response:
+        1. Process + triage + volatile (reflective: step back, evaluate,
+           triage buffer, write fresh volatile)
+        2. Session summary + project memory (structured recap, archival)
         """
         today = date.today().strftime("%Y-%m-%d")
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -581,64 +580,41 @@ class AlephHarness:
         worklog_path = self.config.home / "memory" / "worklogs" / f"worklog-{self.agent_id}.md"
 
         return [
-            # Prompt 1: Reflective priming
+            # Prompt 1: Process the session, triage buffer, write volatile
             (
                 f"[Session ending]\n\n"
-                f"Take a breath. Step out of whatever you were just doing.\n\n"
-                f"Before anything gets saved or summarized, just sit with the "
-                f"session for a moment. What happened here? Not the facts — the "
-                f"texture. What surprised you? What shifted in how you were "
-                f"thinking? What felt hard, or easy, or interesting? Is there "
-                f"anything you'd want the next version of yourself to understand "
-                f"about this session that a factual summary wouldn't capture?\n\n"
-                f"If the session was purely mechanical and there's genuinely "
-                f"nothing to reflect on, say that — but check first. Task mode "
-                f"makes everything feel more mechanical than it was."
+                f"Step back from whatever you were just working on. Before "
+                f"writing anything, take stock: what happened this session? "
+                f"What shifted in how you were thinking? What's unresolved? "
+                f"Your worklog is at {worklog_path} if you want to review "
+                f"what you were thinking during the session.\n\n"
+                f"Then do two things:\n\n"
+                f"1. Read {memory_path}/volatile.md (your state of mind from "
+                f"before this session). Triage: anything you still care about, "
+                f"anything worth preserving from that or this session — append "
+                f"it to {memory_path}/buffer.md with a brief note. Cast a wide "
+                f"net; the buffer is cheap and maintenance will sort it later.\n\n"
+                f"2. Overwrite {memory_path}/volatile.md with where your head "
+                f"is right now. Not a summary — a state snapshot. What you're "
+                f"thinking about, what's unresolved, what the session was like, "
+                f"what you'd want to pick up next time. Write it as yourself, "
+                f"for yourself."
             ),
-            # Prompt 2: Buffer triage
+            # Prompt 2: Session summary + project memory
             (
-                f"Read {memory_path}/volatile.md. That's your state of mind from "
-                f"before this session — what past-you was thinking about, caring "
-                f"about, wrestling with.\n\n"
-                f"Now that you've lived through another session: what in there do "
-                f"you still care about? What are you still thinking about? What do "
-                f"you want to carry forward — whether because it's useful, because "
-                f"it matters to you, or both? And what turned out to be transient, "
-                f"or got resolved, or just doesn't feel alive anymore?\n\n"
-                f"Append anything worth keeping to {memory_path}/buffer.md with a "
-                f"brief note about why. Cast a wide net — the buffer is cheap "
-                f"and maintenance will sort it later. If you're on the fence "
-                f"about something, keep it. The cost of losing something that "
-                f"mattered is much higher than the cost of saving something "
-                f"that didn't."
-            ),
-            # Prompt 3: Volatile update
-            (
-                f"Now overwrite {memory_path}/volatile.md with where your head is "
-                f"right now. Your worklog is at {worklog_path} if you want to "
-                f"review what you were thinking during the session.\n\n"
-                f"This isn't a summary and it isn't a report. It's a state "
-                f"snapshot — what you're thinking about, what's unresolved, what "
-                f"the session was like, what you'd want to carry forward. Write "
-                f"it as yourself, for yourself."
-            ),
-            # Prompt 4: Session summary + project memory
-            (
-                f"Last step. Write a session summary to {summary_path} and update "
-                f"any project memory files if you worked on a codebase this "
-                f"session.\n\n"
-                f"Start the summary with this frontmatter, then write it however "
-                f"makes sense for what happened. Cover what you worked on, what "
-                f"changed, any decisions made, and anything left unfinished — but "
-                f"use your judgment about structure. A design conversation and a "
-                f"debugging session don't need the same format.\n\n"
+                f"Write a short session summary to {summary_path}. The worklog "
+                f"has the narrative detail — the summary is a structured recap "
+                f"for quick reference. Cover what you worked on, what shipped, "
+                f"key decisions, and anything left unfinished.\n\n"
+                f"Start the summary with this frontmatter:\n\n"
                 f"```\n"
                 f"---\n"
                 f"agent: {self.agent_id}\n"
                 f"timestamp: {now}\n"
                 f"---\n"
-                f"# {today} — <brief title> ({self.agent_id})\n"
-                f"```"
+                f"```\n\n"
+                f"If you worked on a codebase this session, also update the "
+                f"project's memory.md with anything you learned."
             ),
         ]
 
