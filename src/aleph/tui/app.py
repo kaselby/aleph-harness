@@ -533,14 +533,11 @@ class AlephApp:
             if app_ref._app:
                 app_ref._app.invalidate()
 
-        # Ctrl+Right / Ctrl+Left cycle through views (agent + channels)
-        @kb.add("c-right", filter=is_idle & ~is_permission_pending)
-        def handle_view_next(event):
+        # Ctrl+O cycles through views (agent + channels).
+        # Ctrl+Arrow would be more intuitive but tmux captures those.
+        @kb.add("c-o", filter=is_idle & ~is_permission_pending)
+        def handle_view_cycle(event):
             app_ref._cycle_view(+1)
-
-        @kb.add("c-left", filter=is_idle & ~is_permission_pending)
-        def handle_view_prev(event):
-            app_ref._cycle_view(-1)
 
         # Enter submits input (only when not receiving a response)
         @kb.add("enter", filter=is_idle & ~is_permission_pending)
@@ -563,6 +560,9 @@ class AlephApp:
                 if sc:
                     sc.skip_summary = True
                 event.app.exit()
+                return
+            if text == "/ch":
+                app_ref._cycle_view(+1)
                 return
 
             # Channel view: send directly to the channel
