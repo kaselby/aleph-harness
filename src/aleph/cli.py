@@ -65,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         help="Resume a specific session by agent ID (e.g. aleph-ed2331a5)",
     )
     parser.add_argument(
+        "--mode",
+        choices=["safe", "default", "yolo"],
+        default=None,
+        help="Initial permission mode (safe, default, yolo)",
+    )
+    parser.add_argument(
         "--detach",
         action="store_true",
         help="Don't attach to the tmux session after launch",
@@ -92,6 +98,8 @@ def _build_inner_command(args: argparse.Namespace, agent_id: str) -> str:
         cmd_parts += ["--depth", str(args.depth)]
     if args.ephemeral:
         cmd_parts.append("--ephemeral")
+    if args.mode:
+        cmd_parts += ["--mode", args.mode]
     if args.continue_session:
         cmd_parts.append("--continue")
     if args.resume:
@@ -200,6 +208,7 @@ def main():
         ephemeral=args.ephemeral,
         continue_session=args.continue_session,
         resume_session=args.resume,
+        initial_mode=args.mode,
     )
 
     harness = AlephHarness(config)

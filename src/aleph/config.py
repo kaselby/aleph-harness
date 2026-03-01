@@ -54,6 +54,9 @@ class AlephConfig:
     # Resume a specific session by agent ID
     resume_session: str | None = None
 
+    # Initial permission mode (safe, default, yolo). None = default.
+    initial_mode: str | None = None
+
     @property
     def system_prompt_path(self) -> Path:
         return self.home / "ALEPH.md"

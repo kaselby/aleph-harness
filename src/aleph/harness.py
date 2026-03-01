@@ -341,6 +341,12 @@ class AlephHarness:
             ctx += "\n\n---\n## Memory Context\n\n"
             ctx += context_file.read_text()
 
+        # Inject knowledge base index if it exists
+        kb_index_file = self.config.memory_path / "knowledge-index.md"
+        if kb_index_file.exists() and not self.config.ephemeral:
+            ctx += "\n\n---\n"
+            ctx += kb_index_file.read_text()
+
         # Inject volatile state-of-mind if it exists (skip for ephemeral agents —
         # volatile is the persistent agent's state of mind, not relevant to workers)
         volatile_file = self.config.memory_path / "volatile.md"

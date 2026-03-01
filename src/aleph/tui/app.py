@@ -435,7 +435,10 @@ class AlephApp:
         self._receiving = False
         self._interrupt_in_flight = False
         self._receive_task: asyncio.Task | None = None
-        self._perm_mode = PermissionMode.DEFAULT
+        if harness.config.initial_mode:
+            self._perm_mode = PermissionMode(harness.config.initial_mode)
+        else:
+            self._perm_mode = PermissionMode.DEFAULT
         self._pending_permission: PermissionRequest | None = None
         self._app: Application | None = None
 
