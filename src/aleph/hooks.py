@@ -28,6 +28,7 @@ def create_inbox_check_hook(inbox_path: Path):
             return {}
 
         summaries = []
+        to_mark = []
         for msg_file in sorted(inbox_path.iterdir()):
             if msg_file.is_file() and msg_file.suffix == ".md":
                 # Check for read marker
@@ -43,9 +44,14 @@ def create_inbox_check_hook(inbox_path: Path):
                     else:
                         prefix = "[Message]"
                     summaries.append(f"{prefix}: {parsed['summary']} — Full message at {msg_file}")
+                    to_mark.append(read_marker)
 
         if not summaries:
             return {}
+
+        # Mark as read so subsequent hook fires don't re-display
+        for marker in to_mark:
+            marker.touch()
 
         return {
             "hookSpecificOutput": {

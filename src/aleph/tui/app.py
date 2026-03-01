@@ -1071,16 +1071,17 @@ class AlephApp:
         _tprint("\n<agent-msg-b>\U0001f4e8 {}:</agent-msg-b>", sender)
         if summary:
             _tprint("<agent-msg>{}</agent-msg>", summary)
-        if body:
+        if body and body != summary:
             # Show body (truncated if very long)
             display_body = body if len(body) < 2000 else body[:2000] + "\n... (truncated)"
             _tprint("<agent-msg>{}</agent-msg>", display_body)
 
-        # Format for the model
-        formatted = f"[Message from {sender}]\n{body}"
+        # Format for the model — prefer body, fall back to summary
+        model_text = body or summary
+        formatted = f"[Message from {sender}]\n{model_text}"
 
-        # Compute adaptive cooldown based on body length
-        if len(body) < 200:
+        # Compute adaptive cooldown based on message length
+        if len(model_text) < 200:
             cooldown = 5.0
         else:
             cooldown = 1.0
