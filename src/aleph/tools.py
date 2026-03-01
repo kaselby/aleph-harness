@@ -326,6 +326,15 @@ def create_aleph_mcp_server(
         except OSError as e:
             return _error(f"Failed to read file: {e}")
 
+        # Strip control characters that are invalid in XML (the Claude Code
+        # SDK passes tool results through XML processing). Valid XML chars
+        # are: \t \n \r and U+0020+. Form feeds (from pdftotext) and other
+        # C0 controls cause "not well-formed (invalid token)" errors that
+        # crash the session.
+        raw = raw.translate(
+            {c: None for c in range(32) if c not in (9, 10, 13)}
+        )
+
         lines = raw.split("\n")
         # Remove trailing empty string from split if file ends with newline
         if lines and lines[-1] == "":
