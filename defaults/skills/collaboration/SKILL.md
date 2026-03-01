@@ -12,17 +12,19 @@ description: >
 ## Launching Peers
 
 ```bash
-aleph --detach --ephemeral [--id <name>] [--model <model>] [--project <path>]
+aleph --detach --ephemeral [--id <name>] [--mode <mode>] [--model <model>] [--project <path>]
 ```
 
 All aleph instances run inside tmux. `--detach` prevents auto-attaching to the new session — the command prints the agent ID and returns immediately. Always launch with `--ephemeral` — spawned agents should not write session summaries or update persistent memory. (Omit `--ephemeral` only if you specifically need the peer to persist its own session history.)
+
+Use `--mode yolo` for agents that should run fully autonomously without permission prompts. Use `--mode safe` for agents that need human approval on every tool call. Default mode (`--mode default`) uses the normal permission rules. Most spawned workers should use `--mode yolo` — they'll get stuck on permission prompts otherwise since nobody is watching their tmux session.
 
 Use `--id` to give the agent a descriptive name that reflects its task — this is what shows up in `tmux list-sessions`.
 
 After launching, send a message with instructions and your callback ID. Messages can be sent immediately — they're written to the inbox directory and will be picked up when the agent starts, no need to wait.
 
 ```bash
-aleph --detach --ephemeral --id auth-worker
+aleph --detach --ephemeral --mode yolo --id auth-worker
 ```
 ```
 message(action="send", to="auth-worker", summary="Task assignment", body="...", priority="normal")
