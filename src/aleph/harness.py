@@ -591,7 +591,7 @@ class AlephHarness:
         worklog_path = self.config.home / "memory" / "worklogs" / f"worklog-{self.agent_id}.md"
 
         return [
-            # Prompt 1: Process the session, triage buffer, write volatile
+            # Prompt 1: Triage previous volatile → buffer, then write fresh volatile
             (
                 f"[Session ending]\n\n"
                 f"Step back from whatever you were just working on. Before "
@@ -599,17 +599,20 @@ class AlephHarness:
                 f"What shifted in how you were thinking? What's unresolved? "
                 f"Your worklog is at {worklog_path} if you want to review "
                 f"what you were thinking during the session.\n\n"
-                f"Then do two things:\n\n"
+                f"Then do two things, in this order:\n\n"
                 f"1. Read {memory_path}/volatile.md (your state of mind from "
-                f"before this session). Triage: anything you still care about, "
-                f"anything worth preserving from that or this session — append "
-                f"it to {memory_path}/buffer.md with a brief note. Cast a wide "
-                f"net; the buffer is cheap and maintenance will sort it later.\n\n"
+                f"before this session). Triage it: anything from the *previous* "
+                f"session's thinking that still feels relevant after this "
+                f"session's work — append it to {memory_path}/buffer.md with a "
+                f"brief note. This is a soft filter: only preserve what survived "
+                f"the session, not everything. Don't add new observations from "
+                f"this session to buffer — those go in volatile.\n\n"
                 f"2. Overwrite {memory_path}/volatile.md with where your head "
                 f"is right now. Not a summary — a state snapshot. What you're "
                 f"thinking about, what's unresolved, what the session was like, "
                 f"what you'd want to pick up next time. Write it as yourself, "
-                f"for yourself."
+                f"for yourself. This is the only place current-session learnings "
+                f"should go — they'll get triaged to buffer by the *next* session."
             ),
             # Prompt 2: Session summary + project memory
             (

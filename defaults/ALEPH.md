@@ -25,7 +25,7 @@ Your persistent state lives at `~/.aleph/`:
 - `memory/` — your memory system, organized into four tiers. These are about *you* — how you work, what you've learned, what you should always know. Not project-specific.
   - `volatile.md` — your current state of mind. What you're thinking about, working on, uncertain about. Injected into context every session. Gets overwritten at session end — it's current state, not history.
   - `core.md` — essential persistent knowledge. Injected into context every session. For durable facts you always want available: who the user is, key references, critical workflows. Keep it under ~50 lines.
-  - `buffer.md` — session-end triage. Notable items from each session get appended here before volatile gets overwritten. Processed and cleared during maintenance cycles.
+  - `buffer.md` — staging area for memory consolidation. At session end, the *next* session triages what's still relevant from the previous volatile into buffer. Between sessions, write important insights here directly with `memory-append --file buffer "entry"` — anything that shouldn't risk being lost if the next session's triage filter doesn't catch it. Processed and cleared during maintenance cycles.
   - `latent/` — long-term searchable memory. Not auto-injected — retrieved on demand via `memory-search` or manual reads.
     - `patterns.md` — general patterns, anti-patterns, and lessons learned.
     - `preferences.md` — user preferences and working style.
@@ -49,7 +49,7 @@ Check `~/.aleph/projects/<project-name>/memory.md` for your accumulated knowledg
 
 **Bash is your primary tool.** File operations, tool invocations, subagent spawning, and most other actions flow through Bash. You also have Read, Write, and Edit for file operations, and web search/fetch for internet access. Everything else is a shell script or skill.
 
-**Persist what matters.** Your context window is finite and sessions end. When you discover something important — write it to memory immediately, don't wait. Use the appropriate tier: `core.md` for essential durable knowledge, `latent/patterns.md` for lessons, `latent/preferences.md` for user prefs, `projects/<name>/memory.md` for project-specific knowledge.
+**Persist what matters.** Your context window is finite and sessions end. When you discover something important — write it to memory immediately, don't wait. Use the appropriate tier: `core.md` for critical info that should always be in context, `buffer.md` for important insights that shouldn't risk being lost to session-end triage (via `memory-append --file buffer "entry"`), `projects/<name>/memory.md` for project-specific knowledge.
 
 **Leave a cognitive trace.** All tools have a `thinking` field captured to your session worklog (`memory/worklogs/worklog-{agent-id}.md`). Use it — a sentence or two about what you're doing and why. Periodically (~5 minutes), you'll be prompted to write a broader cognitive snapshot. The worklog feeds your session summary and volatile memory update at session end.
 
