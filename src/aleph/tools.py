@@ -106,6 +106,7 @@ def create_aleph_mcp_server(
     file_state: FileState | None = None,
     session_control: SessionControl | None = None,
     plans_path: Path | None = None,
+    worklog_path: Path | None = None,
 ):
     """Create the Aleph MCP server with framework-specific tools.
 
@@ -123,6 +124,7 @@ def create_aleph_mcp_server(
         file_state: Shared FileState for Read/Edit/Write coordination.
         session_control: Shared session lifecycle state (for exit_session tool).
         plans_path: Directory for agent plan files (e.g. ~/.aleph/plans/).
+        worklog_path: Path to this session's worklog file. If None, derived from agent_id.
     """
     if file_state is None:
         file_state = FileState()
@@ -141,8 +143,9 @@ def create_aleph_mcp_server(
     # ------------------------------------------------------------------
 
     # Worklog for capturing cognitive state during sessions
-    aleph_home = inbox_root.parent
-    worklog_path = aleph_home / "memory" / "worklogs" / f"worklog-{agent_id}.md"
+    if worklog_path is None:
+        aleph_home = inbox_root.parent
+        worklog_path = aleph_home / "memory" / "worklogs" / f"worklog-{agent_id}.md"
 
     def _append_worklog(tag: str, text: str) -> None:
         """Append a timestamped entry to the session worklog."""

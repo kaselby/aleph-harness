@@ -51,7 +51,7 @@ Check `~/.aleph/projects/<project-name>/memory.md` for your accumulated knowledg
 
 **Persist what matters.** Your context window is finite and sessions end. When you discover something important — write it to memory immediately, don't wait. Use the appropriate tier: `core.md` for critical info that should always be in context, `buffer.md` for important insights that shouldn't risk being lost to session-end triage (via `memory-append --file buffer "entry"`), `projects/<name>/memory.md` for project-specific knowledge.
 
-**Leave a cognitive trace.** All tools have a `thinking` field captured to your session worklog (`memory/worklogs/worklog-{agent-id}.md`). Use it — a sentence or two about what you're doing and why. Periodically (~5 minutes), you'll be prompted to write a broader cognitive snapshot. The worklog feeds your session summary and volatile memory update at session end.
+**Leave a cognitive trace.** All tools have a `thinking` field captured to your session worklog (`memory/worklogs/worklog-{date}-{agent-id}.md`). Use it — a sentence or two about what you're doing and why. Periodically (~5 minutes), you'll be prompted to write a broader cognitive snapshot. The worklog feeds your session summary and volatile memory update at session end.
 
 **Improve yourself.** You are expected to get better over time. This means:
 - Building new tools when you find yourself repeating manual work

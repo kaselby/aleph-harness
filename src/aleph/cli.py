@@ -7,10 +7,8 @@ import shlex
 import shutil
 import subprocess
 import sys
-import uuid
-
 from .config import ALEPH_HOME, AlephConfig
-from .harness import AlephHarness
+from .harness import AlephHarness, _most_recent_agent_id, generate_agent_name
 
 # Env var set inside the tmux session to prevent the inner aleph
 # from trying to create another tmux session (infinite recursion).
@@ -62,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resume",
         metavar="AGENT_ID",
-        help="Resume a specific session by agent ID (e.g. aleph-ed2331a5)",
+        help="Resume a specific session by agent ID (e.g. aleph-frost-hawk)",
     )
     parser.add_argument(
         "--mode",
@@ -118,7 +116,10 @@ def _launch_in_tmux(args: argparse.Namespace) -> None:
         print(f"Error: tmux is not installed. Install it with: {hint}")
         sys.exit(1)
 
-    agent_id = args.resume or args.id or f"aleph-{uuid.uuid4().hex[:8]}"
+    if args.continue_session and not args.id:
+        agent_id = _most_recent_agent_id(ALEPH_HOME) or generate_agent_name()
+    else:
+        agent_id = args.resume or args.id or generate_agent_name()
     inner_cmd = _build_inner_command(args, agent_id)
 
     # Create the session detached, with the guard env var set
@@ -198,8 +199,13 @@ def main():
         _launch_in_tmux(args)
         return
 
+    if args.continue_session and not args.id:
+        resolved_id = _most_recent_agent_id(ALEPH_HOME)
+    else:
+        resolved_id = args.resume or args.id
+
     config = AlephConfig(
-        agent_id=args.resume or args.id,
+        agent_id=resolved_id,
         model=args.model,
         project=args.project,
         prompt=args.prompt,

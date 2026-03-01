@@ -6,12 +6,65 @@ import os
 # Allow launching from inside a Claude Code session (or another Aleph instance)
 os.environ.pop("CLAUDECODE", None)
 import platform
+import random
 import shutil
 import uuid
 from datetime import date, datetime
 from pathlib import Path
 
 import yaml
+
+_ADJECTIVES = [
+    "amber", "ash", "black", "blue", "bold", "bright", "calm", "cold",
+    "coral", "crimson", "crystal", "dark", "dawn", "deep", "dusk", "ember",
+    "far", "first", "frost", "gold", "green", "grey", "high", "iron",
+    "jade", "keen", "last", "lone", "lost", "low", "moss", "new",
+    "old", "pale", "quiet", "red", "shadow", "silver", "still", "stone",
+    "storm", "sun", "swift", "thorn", "warm", "white", "wild",
+]
+
+_NOUNS = [
+    "bay", "bear", "blade", "brook", "cairn", "cliff", "cove", "crane",
+    "crow", "dale", "deer", "drake", "dune", "elk", "falcon", "fern",
+    "field", "forge", "fox", "gate", "glade", "glen", "grove", "hare",
+    "haven", "hawk", "heron", "isle", "jay", "keep", "lake", "lark",
+    "lynx", "marsh", "moth", "owl", "peak", "pike", "pine", "pond",
+    "raven", "reach", "reef", "ridge", "seal", "shore", "spire", "vale",
+    "vole", "ward", "wolf", "wren",
+]
+
+
+def generate_agent_name() -> str:
+    """Generate a human-readable agent name like 'aleph-frost-hawk'.
+
+    Checks running tmux sessions to avoid collisions with active agents.
+    Historical reuse is fine — date-stamped files (worklogs, summaries,
+    conversation archives) prevent data loss, and transient state (plans,
+    inbox, registry entries) is meant to be overwritten.
+
+    Falls back to hex UUID after 20 attempts.
+    """
+    import subprocess
+
+    # Get running tmux session names for collision check
+    running: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            running = set(result.stdout.strip().splitlines())
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    for _ in range(20):
+        name = f"aleph-{random.choice(_ADJECTIVES)}-{random.choice(_NOUNS)}"
+        if name not in running:
+            return name
+    # Extremely unlikely fallback
+    return f"aleph-{uuid.uuid4().hex[:8]}"
+
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -191,6 +244,25 @@ def _get_knowledge_cutoff(model: str) -> str:
     return "unknown"
 
 
+def _most_recent_agent_id(home: Path) -> str | None:
+    """Look up the most recently started agent ID from the session registry.
+
+    Used by --continue to reuse the same agent ID instead of generating a new one.
+    Returns None if the registry doesn't exist or is empty.
+    """
+    registry_path = home / "logs" / "session-registry.json"
+    if not registry_path.exists():
+        return None
+    try:
+        registry = json.loads(registry_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not registry:
+        return None
+    # Sort by started_at descending, return the most recent
+    return max(registry, key=lambda k: registry[k].get("started_at", ""))
+
+
 from .config import ALLOWED_TOOLS, BASE_TOOLS, AlephConfig
 from .hooks import (
     _build_session_recap,
@@ -211,7 +283,7 @@ class AlephHarness:
 
     def __init__(self, config: AlephConfig):
         self.config = config
-        self.agent_id = config.agent_id or f"aleph-{uuid.uuid4().hex[:8]}"
+        self.agent_id = config.agent_id or generate_agent_name()
         self.session_id: str | None = None
         self._client: ClaudeSDKClient | None = None
         self._expected_model = _resolve_model(config.model)
@@ -222,6 +294,36 @@ class AlephHarness:
         self.session_control: SessionControl | None = None
         self._stderr_fh = None
         self.restart_requested = False
+        self._worklog_path = self._resolve_worklog_path()
+
+    def _resolve_worklog_path(self) -> Path:
+        """Compute the worklog path for this session.
+
+        Names worklogs as worklog-{YYYY-MM-DD}-{agent-id}.md for natural date
+        sorting. On resume, reuses an existing worklog for the same agent ID
+        (regardless of date) to keep a single file per logical session.
+        """
+        worklogs_dir = self.config.home / "memory" / "worklogs"
+        # Check for an existing worklog for this agent ID (handles resume).
+        # Match both old format (worklog-{id}.md) and new (worklog-{date}-{id}.md).
+        old_name = f"worklog-{self.agent_id}.md"
+        new_suffix = f"-{self.agent_id}.md"
+        new_prefix = "worklog-"
+        if worklogs_dir.exists():
+            for f in worklogs_dir.iterdir():
+                if f.name == old_name:
+                    return f
+                if (f.name.startswith(new_prefix) and f.name.endswith(new_suffix)):
+                    # Verify the middle part is a date (YYYY-MM-DD)
+                    middle = f.name[len(new_prefix):-len(new_suffix)]
+                    if len(middle) == 10 and middle[4] == "-" and middle[7] == "-":
+                        return f
+        today = date.today().strftime("%Y-%m-%d")
+        return worklogs_dir / f"worklog-{today}-{self.agent_id}.md"
+
+    @property
+    def worklog_path(self) -> Path:
+        return self._worklog_path
 
     @property
     def _registry_path(self) -> Path:
@@ -426,8 +528,7 @@ class AlephHarness:
         # Worklog hooks only for persistent agents — ephemeral workers don't need
         # cognitive snapshots or turn-ending after worklog writes
         if not self.config.ephemeral:
-            worklog_path = self.config.home / "memory" / "worklogs" / f"worklog-{self.agent_id}.md"
-            worklog_stop, worklog_cutoff = create_worklog_hooks(worklog_path)
+            worklog_stop, worklog_cutoff = create_worklog_hooks(self.worklog_path)
             hooks["PostToolUse"].append(
                 HookMatcher(matcher=None, hooks=[worklog_cutoff]),
             )
@@ -467,6 +568,7 @@ class AlephHarness:
             cwd=cwd, env=env, file_state=file_state,
             session_control=self.session_control,
             plans_path=plans_path,
+            worklog_path=self.worklog_path,
         )
 
         # Resolve --resume agent ID to Claude session UUID + original cwd
@@ -588,7 +690,7 @@ class AlephHarness:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         summary_path = self.config.memory_path / "sessions" / f"{today}-{self.agent_id}.md"
         memory_path = self.config.memory_path
-        worklog_path = self.config.home / "memory" / "worklogs" / f"worklog-{self.agent_id}.md"
+        worklog_path = self.worklog_path
 
         return [
             # Prompt 1: Triage previous volatile → buffer, then write fresh volatile
